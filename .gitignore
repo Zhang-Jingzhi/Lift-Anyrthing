@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Local environments and IDEs
+.env
+.venv/
+env/
+.idea/
+.vscode/
+
+# Model/data artifacts (download separately)
+/ckpt/
+/data/
+*.ckpt
+*.pth
+*.pt
+*.zip
+
+# Experiment outputs and caches
+/graph_exp/
+/wandb/
+/.package-cache/
+/src/
+*.log
+res.txt
+
+# OS/editor files
+.DS_Store
+*~
+

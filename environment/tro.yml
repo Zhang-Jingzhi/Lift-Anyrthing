@@ -1,0 +1,21 @@
+name: tro
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools
+  - wheel
+  - git
+  - cmake
+  - ninja
+  - mkl=2023.1.0
+  - suitesparse=7.10.1
+  - scikit-sparse=0.4.16
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - pytorch-cuda=12.1
+
