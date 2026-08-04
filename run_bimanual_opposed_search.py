@@ -10,6 +10,7 @@ Isaac disturbance success.
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -146,8 +147,7 @@ def main():
     parser.add_argument(
         "--isaac-python",
         type=Path,
-        required=True,
-        help="Python executable from the Isaac Gym environment.",
+        default=Path(os.environ.get("ISAAC_PYTHON", "python")),
     )
     parser.add_argument("--objects", nargs="+")
     parser.add_argument("--include-held-out", action="store_true")

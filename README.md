@@ -7,6 +7,11 @@
 > [environment/README.md](environment/README.md) for portable environment
 > reconstruction.
 
+For the minimal RTX 4090 transfer, use
+[MIGRATE_TO_4090.md](MIGRATE_TO_4090.md). Code, environment manifests, and the
+small custom left/right-hand runtime overlay are kept here; datasets remain on
+Google Drive and Isaac Gym Preview 4 is installed separately from NVIDIA.
+
 Official Code Repository for **$\mathcal{T(R,O)}$ Grasp: Efficient Graph Diffusion of Robot-Object Spatial Transformation for Cross-Embodiment Dexterous Grasping**.
 
 [Xin Fei](https://xinfei21.github.io/web/)<sup>1,2\*</sup>, [Zhixuan Xu](https://ariszxxu.github.io/)<sup>1,2\*</sup>, Huaicong Fang<sup>3</sup>, [Tianrui Zhang](https://ztr583.github.io/)<sup>1</sup>, [Lin Shao](https://linsats.github.io/)<sup>1,2</sup>

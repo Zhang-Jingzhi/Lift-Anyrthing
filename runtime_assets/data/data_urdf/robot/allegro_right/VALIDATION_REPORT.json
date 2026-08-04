@@ -1,0 +1,21 @@
+{
+  "passed": true,
+  "mirror_plane": "palm-local y=0",
+  "random_fk_samples": 100,
+  "tolerance": 1e-08,
+  "checks": {
+    "links_equal": true,
+    "joints_equal": true,
+    "joint_names_equal": true,
+    "kinematic_joint_names_equal": true,
+    "point_cloud_structure_equal": true,
+    "joint_limit_max_error": 0.0,
+    "kinematic_mirror_max_error": 0.0,
+    "visual_mesh_hausdorff_max_m": 0.0,
+    "collision_mesh_hausdorff_max_m": 0.0,
+    "inertia_mirror_max_error": 0.0,
+    "inertial_origin_mirror_max_error": 0.0,
+    "mass_max_error_kg": 0.0,
+    "point_cloud_mirror_max_error_m": 0.0
+  }
+}

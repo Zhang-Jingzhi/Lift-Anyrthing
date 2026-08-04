@@ -43,18 +43,19 @@ def transformed_points(hand, q):
     return torch.cat(list(links.values()), dim=-2)
 
 
-def hand_clearances(hand, left_q, right_q):
-    left_outer, left_inner = controller(hand.robot_name, left_q)
-    right_outer, right_inner = controller(hand.robot_name, right_q)
+def hand_clearances(left_hand, left_q, right_q, right_hand=None):
+    right_hand = right_hand or left_hand
+    left_outer, left_inner = controller(left_hand.robot_name, left_q)
+    right_outer, right_inner = controller(right_hand.robot_name, right_q)
     rows = []
     for index in range(len(left_q)):
         outer_distance = torch.cdist(
-            transformed_points(hand, left_outer[index]),
-            transformed_points(hand, right_outer[index]),
+            transformed_points(left_hand, left_outer[index]),
+            transformed_points(right_hand, right_outer[index]),
         ).min()
         inner_distance = torch.cdist(
-            transformed_points(hand, left_inner[index]),
-            transformed_points(hand, right_inner[index]),
+            transformed_points(left_hand, left_inner[index]),
+            transformed_points(right_hand, right_inner[index]),
         ).min()
         rows.append(
             (
@@ -77,8 +78,6 @@ def run_isaac(args, object_name, left_q, right_q, object_dir):
     command = [
         str(args.isaac_python),
         str(args.repo / "validation/bimanual_isaac_main.py"),
-        "--robot-name",
-        "allegro",
         "--object-name",
         object_name,
         "--left-q-file",
@@ -90,6 +89,66 @@ def run_isaac(args, object_name, left_q, right_q, object_dir):
         "--gpu",
         str(args.gpu),
     ]
+    left_robot_name = getattr(args, "left_robot_name", None)
+    right_robot_name = getattr(args, "right_robot_name", None)
+    if left_robot_name or right_robot_name:
+        if not left_robot_name or not right_robot_name:
+            raise ValueError("Both left_robot_name and right_robot_name are required")
+        command.extend(
+            [
+                "--left-robot-name",
+                left_robot_name,
+                "--right-robot-name",
+                right_robot_name,
+            ]
+        )
+    else:
+        command.extend(
+            ["--robot-name", getattr(args, "robot_name", "allegro")]
+        )
+    command.extend(
+        [
+            "--gravity",
+            str(getattr(args, "gravity", 0.0)),
+            "--gravity-settle-step",
+            str(getattr(args, "gravity_settle_step", 100)),
+            "--active-hands",
+            getattr(args, "active_hands", "both"),
+            "--lift-height",
+            str(getattr(args, "lift_height", 0.0)),
+            "--lift-step",
+            str(getattr(args, "lift_step", 100)),
+            "--min-lift-height",
+            str(getattr(args, "min_lift_height", 0.03)),
+            "--robot-friction",
+            str(getattr(args, "robot_friction", 3.0)),
+            "--object-friction",
+            str(getattr(args, "object_friction", 3.0)),
+            "--contact-offset",
+            str(getattr(args, "contact_offset", 0.01)),
+            "--max-gravity-displacement",
+            str(getattr(args, "max_gravity_displacement", 0.02)),
+            "--max-direction-displacement",
+            str(getattr(args, "max_direction_displacement", 0.02)),
+            "--object-density",
+            str(getattr(args, "object_density", 500.0)),
+        ]
+    )
+    finger_effort_limit = getattr(args, "finger_effort_limit", None)
+    if finger_effort_limit is not None:
+        command.extend(
+            ["--finger-effort-limit", str(finger_effort_limit)]
+        )
+    if getattr(args, "staged_gravity", False):
+        command.append("--staged-gravity")
+    if getattr(args, "independent_directions", False):
+        command.append("--independent-directions")
+    if getattr(args, "gravity_only", False):
+        command.append("--gravity-only")
+    if getattr(args, "support_during_closure", False):
+        command.append("--support-during-closure")
+    if getattr(args, "fixture_during_closure", False):
+        command.append("--fixture-during-closure")
     environment = os.environ.copy()
     environment["PATH"] = (
         str(args.isaac_python.parent)
@@ -231,8 +290,7 @@ def main():
     parser.add_argument(
         "--isaac-python",
         type=Path,
-        required=True,
-        help="Python executable from the Isaac Gym environment.",
+        default=Path(os.environ.get("ISAAC_PYTHON", "python")),
     )
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--clearance-mm", type=float, default=2.0)

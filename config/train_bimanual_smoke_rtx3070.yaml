@@ -1,10 +1,12 @@
 dataset:
   type: "bimanual_pairs"
-  pair_file: "graph_exp/bimanual_large_object/opposed_pose_search/filtered_pairs.pt"
+  pair_file: "data/bimanual/bimanual_dataset.pt"
   batch_size: 1
   num_points: 512
   num_workers: 0
   object_pc_type: "random"
+  sampling_mode: "object_balanced"
+  swap_probability: 0.5
 
 model:
   vqvae_cfg:
@@ -57,6 +59,15 @@ model:
   loss_config:
     trans_weight: 1.0
     rot_weight: 1.0
+    swap_equivariance_weight: 0.05
+    penetration_weight: 0.5
+    contact_weight: 0.05
+    inter_hand_weight: 0.5
+    opposition_weight: 0.2
+    hand_links_per_actor: 21
+    contact_threshold_m: 0.005
+    inter_hand_clearance_m: 0.005
+    root_separation_radius_ratio: 1.5
 
 train:
   lr: 1e-4
@@ -68,6 +79,6 @@ train:
   project_name: "tro-grasp-bimanual-smoke"
   resume_from: false
   max_batches_per_epoch: 1
-  log_interval: 1
+  log_interval: 100
   save_latest_every_epoch: true
   wandb_mode: "offline"
