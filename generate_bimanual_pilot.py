@@ -1,17 +1,19 @@
-"""Generate an auditable pilot dataset for two identical Allegro-hand actors.
+"""Generate an auditable true left/right Allegro bimanual pilot dataset.
 
 The generator uses single-hand poses only as geometric initializations.  The
 second pose is moved to the opposite object side and searched over wrist-roll
 angles.  Candidates are filtered by joint limits, exact mesh penetration,
 contact proximity, inter-hand clearance, and a six-direction Isaac rollout.
 
-This is intentionally labelled a pilot dataset: the repository provides an
-Allegro left-hand URDF but no matching Allegro right-hand URDF.
+The formal protocol uses a validated mirrored right-hand simulation asset,
+gravity from the first frame, simultaneous closure, independent disturbances,
+and left-only/right-only removal ablations.
 """
 
 import argparse
 import csv
 import json
+import os
 import random
 import subprocess
 import sys
@@ -37,8 +39,11 @@ DIRECTION_NAMES = ("+X", "+Y", "+Z", "-X", "-Y", "-Z")
 def write_csv(path, rows):
     if not rows:
         return
+    fieldnames = list(
+        dict.fromkeys(key for row in rows for key in row)
+    )
     with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -87,6 +92,21 @@ def select_source_pairs(q_batch, count, seed):
     return diverse + remaining[: count - diverse_count]
 
 
+def select_symmetric_sources(q_batch, count, seed):
+    """Use one finger posture as the seed for both mirrored hands."""
+    indices = list(range(len(q_batch)))
+    random.Random(seed).shuffle(indices)
+    return [
+        {
+            "left_index": index,
+            "right_index": index,
+            "internal_distance": 0.0,
+            "source_root_cosine": 1.0,
+        }
+        for index in indices[: min(count, len(indices))]
+    ]
+
+
 def transformed_points(hand, q):
     links, _ = hand.get_transformed_links_pc(q)
     return torch.cat(list(links.values()), dim=0).detach().cpu().numpy()
@@ -102,6 +122,60 @@ def exact_pose_metrics(hand, mesh, query, q, contact_threshold):
         "min_surface_distance_mm": float(distances.min()) * 1000.0,
         "contact_point_count": int(
             np.count_nonzero(distances <= contact_threshold)
+        ),
+        "min_world_z_mm": float(points[:, 2].min()) * 1000.0,
+    }
+
+
+def closure_path_min_world_z_mm(hand, outer_q, inner_q, sample_count=5):
+    """Audit the entire simultaneous closing path against the tabletop."""
+    minimum = float("inf")
+    for alpha in torch.linspace(0.0, 1.0, sample_count):
+        q = outer_q * (1.0 - alpha) + inner_q * alpha
+        points = transformed_points(hand, q)
+        minimum = min(minimum, float(points[:, 2].min()) * 1000.0)
+    return minimum
+
+
+def tabletop_side_approach_metrics(left_q, right_q, mesh, args):
+    """Reject wrists that start under the table or on the bottom region."""
+    bottom_mm = float(mesh.bounds[0, 2] * 1000.0)
+    height_mm = float(mesh.extents[2] * 1000.0)
+    horizontal_radius_floor_mm = (
+        float(min(mesh.extents[0], mesh.extents[1]) * 500.0)
+        * args.min_side_root_radius_fraction
+    )
+    root_floor_mm = bottom_mm + args.root_support_clearance_mm
+    root_ceiling_mm = bottom_mm + height_mm * args.max_root_height_fraction
+    left_radius_mm = float(torch.norm(left_q[:2]) * 1000.0)
+    right_radius_mm = float(torch.norm(right_q[:2]) * 1000.0)
+    root_above_table = bool(
+        float(left_q[2] * 1000.0) > root_floor_mm
+        and float(right_q[2] * 1000.0) > root_floor_mm
+    )
+    root_not_overhead = bool(
+        float(left_q[2] * 1000.0) < root_ceiling_mm
+        and float(right_q[2] * 1000.0) < root_ceiling_mm
+    )
+    outside_lateral_sides = bool(
+        left_radius_mm >= horizontal_radius_floor_mm
+        and right_radius_mm >= horizontal_radius_floor_mm
+    )
+    return {
+        "left_root_height_above_table_mm": float(
+            left_q[2] * 1000.0 - bottom_mm
+        ),
+        "right_root_height_above_table_mm": float(
+            right_q[2] * 1000.0 - bottom_mm
+        ),
+        "left_horizontal_root_radius_mm": left_radius_mm,
+        "right_horizontal_root_radius_mm": right_radius_mm,
+        "minimum_side_root_radius_mm": horizontal_radius_floor_mm,
+        "root_above_table_pass": root_above_table,
+        "root_not_overhead_pass": root_not_overhead,
+        "outside_lateral_sides_pass": outside_lateral_sides,
+        "pass": bool(
+            root_above_table and root_not_overhead and outside_lateral_sides
         ),
     }
 
@@ -192,9 +266,7 @@ def chunked_realized_geometry(
     right_q,
     object_dir,
 ):
-    results = []
-    for start in range(0, len(left_q), args.realized_batch_size):
-        end = min(start + args.realized_batch_size, len(left_q))
+    def evaluate_chunk(start, end):
         chunk_dir = (
             object_dir
             / "realized_geometry_chunks"
@@ -225,20 +297,62 @@ def chunked_realized_geometry(
                 str(output_path),
                 "--contact-mm",
                 str(args.contact_mm),
+                "--left-robot-name",
+                args.left_robot_name,
+                "--right-robot-name",
+                args.right_robot_name,
             ]
-            with (chunk_dir / "geometry.log").open("w") as log:
-                subprocess.run(
-                    command,
-                    cwd=args.repo,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    check=True,
+            try:
+                with (chunk_dir / "geometry.log").open("w") as log:
+                    subprocess.run(
+                        command,
+                        cwd=args.repo,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        check=True,
+                    )
+            except subprocess.CalledProcessError:
+                if end - start <= 1:
+                    print(
+                        f"[{object_name}] realized geometry sample "
+                        f"{start} failed in isolation; conservatively "
+                        "rejecting it",
+                        flush=True,
+                    )
+                    failed_result = [
+                        {
+                            "audit_error":
+                                "realized_geometry_subprocess_failed"
+                        }
+                    ]
+                    torch.save(failed_result, output_path)
+                    return failed_result
+                midpoint = start + (end - start) // 2
+                print(
+                    f"[{object_name}] realized geometry chunk "
+                    f"{start}:{end} failed; retrying as "
+                    f"{start}:{midpoint} and {midpoint}:{end}",
+                    flush=True,
                 )
+                split_results = (
+                    evaluate_chunk(start, midpoint)
+                    + evaluate_chunk(midpoint, end)
+                )
+                torch.save(split_results, output_path)
+                return split_results
+        return torch.load(
+            output_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+
+    results = []
+    for start in range(0, len(left_q), args.realized_batch_size):
+        end = min(start + args.realized_batch_size, len(left_q))
         results.extend(
-            torch.load(
-                output_path,
-                map_location="cpu",
-                weights_only=False,
+            evaluate_chunk(
+                start,
+                end,
             )
         )
     return results
@@ -251,7 +365,7 @@ def pose_pair_metrics(
     q,
     contact_threshold,
 ):
-    outer, inner = controller("allegro", q.unsqueeze(0))
+    outer, inner = controller(hand.robot_name, q.unsqueeze(0))
     return {
         "outer": exact_pose_metrics(
             hand,
@@ -270,15 +384,191 @@ def pose_pair_metrics(
     }
 
 
+def place_on_ray(q, target_direction, roll_degrees):
+    """Rigidly rotate one seed onto a target approach ray."""
+    result = q.clone()
+    source = q[:3].detach().cpu().numpy().astype(np.float64)
+    source_norm = max(np.linalg.norm(source), 1e-8)
+    source_direction = source / source_norm
+    target = np.asarray(target_direction, dtype=np.float64)
+    target /= max(np.linalg.norm(target), 1e-8)
+    align_rotation, _ = Rotation.align_vectors(
+        target.reshape(1, 3),
+        source_direction.reshape(1, 3),
+    )
+    align_matrix = align_rotation.as_matrix()
+    source_rotation = Rotation.from_euler(
+        "XYZ",
+        q[3:6].detach().cpu().numpy(),
+    ).as_matrix()
+    roll_rotation = Rotation.from_rotvec(
+        np.deg2rad(roll_degrees) * target
+    ).as_matrix()
+    result[:3] = torch.as_tensor(target * source_norm, dtype=result.dtype)
+    result[3:6] = torch.as_tensor(
+        Rotation.from_matrix(
+            roll_rotation @ align_matrix @ source_rotation
+        ).as_euler("XYZ"),
+        dtype=result.dtype,
+    )
+    return result
+
+
+def place_opposite_tabletop(
+    left_q,
+    right_q,
+    roll_degrees,
+    left_roll_degrees=180.0,
+    root_height=0.02,
+):
+    """Place both wrists on opposite horizontal rays at object mid-height."""
+    left_xy = left_q[:2].detach().cpu().numpy().astype(np.float64)
+    if np.linalg.norm(left_xy) < 1e-8:
+        left_direction = np.array([1.0, 0.0, 0.0])
+    else:
+        left_direction = np.array([left_xy[0], left_xy[1], 0.0])
+        left_direction /= np.linalg.norm(left_direction)
+    left_result = place_on_ray(
+        left_q,
+        left_direction,
+        left_roll_degrees,
+    )
+    right_result = place_on_ray(
+        right_q,
+        -left_direction,
+        roll_degrees,
+    )
+    left_result[2] += root_height
+    right_result[2] += root_height
+    return left_result, right_result
+
+
+def place_opposite_3d(left_q, right_q, roll_degrees):
+    """Place the right seed on the 3-D ray opposite the left wrist."""
+    result = right_q.clone()
+    source = right_q[:3].detach().cpu().numpy().astype(np.float64)
+    target = -left_q[:3].detach().cpu().numpy().astype(np.float64)
+    source_norm = max(np.linalg.norm(source), 1e-8)
+    target /= max(np.linalg.norm(target), 1e-8)
+    source_direction = source / source_norm
+    align_rotation, _ = Rotation.align_vectors(
+        target.reshape(1, 3),
+        source_direction.reshape(1, 3),
+    )
+    align_matrix = align_rotation.as_matrix()
+    source_rotation = Rotation.from_euler(
+        "XYZ",
+        right_q[3:6].detach().cpu().numpy(),
+    ).as_matrix()
+    roll_rotation = Rotation.from_rotvec(
+        np.deg2rad(roll_degrees) * target
+    ).as_matrix()
+    result[:3] = torch.as_tensor(
+        target * source_norm,
+        dtype=result.dtype,
+    )
+    result[3:6] = torch.as_tensor(
+        Rotation.from_matrix(
+            roll_rotation @ align_matrix @ source_rotation
+        ).as_euler("XYZ"),
+        dtype=result.dtype,
+    )
+    return result
+
+
+def refine_radial_pose(
+    hand,
+    mesh,
+    query,
+    q,
+    contact_threshold,
+    penetration_mm,
+    max_offset_mm,
+    offset_step_mm,
+    horizontal_only=False,
+):
+    """Translate a seed radially outward without altering finger joints."""
+    direction = q[:3] / q[:3].norm().clamp_min(1e-8)
+    if horizontal_only:
+        direction = direction.clone()
+        direction[2] = 0.0
+        direction /= direction.norm().clamp_min(1e-8)
+    best = None
+    offsets = np.arange(
+        0.0,
+        max_offset_mm + 0.5 * offset_step_mm,
+        offset_step_mm,
+    )
+    for offset_mm in offsets:
+        candidate = q.clone()
+        candidate[:3] += direction * float(offset_mm / 1000.0)
+        metrics = pose_pair_metrics(
+            hand,
+            mesh,
+            query,
+            candidate,
+            contact_threshold,
+        )
+        outer_penetration = metrics["outer"]["penetration_depth_mm"]
+        inner_distance = metrics["inner"]["min_surface_distance_mm"]
+        feasible = (
+            outer_penetration <= penetration_mm
+            and inner_distance <= contact_threshold * 1000.0
+        )
+        score = (
+            max(0.0, outer_penetration - penetration_mm)
+            + max(
+                0.0,
+                inner_distance - contact_threshold * 1000.0,
+            )
+            + 1e-4 * float(offset_mm)
+        )
+        if best is None or score < best[0]:
+            best = (score, candidate, metrics, float(offset_mm))
+        if feasible:
+            return candidate, metrics, float(offset_mm)
+    return best[1], best[2], best[3]
+
+
 def joint_limit_pass(hand, q):
     lower, upper = hand.pk_chain.get_joint_limits()
     lower = torch.as_tensor(lower, dtype=q.dtype)
     upper = torch.as_tensor(upper, dtype=q.dtype)
-    tolerance = 1e-5
+    # PhysX position drives can settle a few 1e-4 rad beyond the imported
+    # URDF bound.  One milliradian (0.057 deg) is a numerical audit tolerance,
+    # not an expanded command limit.
+    tolerance = 1e-3
     return bool(
         torch.all(q >= lower - tolerance)
         and torch.all(q <= upper + tolerance)
     )
+
+
+def lateral_pose_metrics(left_q, right_q, args):
+    left_xy = left_q[:2]
+    right_xy = right_q[:2]
+    cosine = float(
+        torch.dot(left_xy, right_xy)
+        / (left_xy.norm().clamp_min(1e-8) * right_xy.norm().clamp_min(1e-8))
+    )
+    max_abs_z_mm = float(
+        torch.maximum(left_q[2].abs(), right_q[2].abs()) * 1000
+    )
+    height_difference_mm = float((left_q[2] - right_q[2]).abs() * 1000)
+    passed = (
+        args.opposition_mode != "tabletop"
+        or (
+            cosine <= args.lateral_opposition_cosine
+            and max_abs_z_mm <= args.lateral_max_root_z_mm
+            and height_difference_mm <= args.lateral_max_height_diff_mm
+        )
+    )
+    return {
+        "horizontal_root_cosine": cosine,
+        "max_abs_root_z_mm": max_abs_z_mm,
+        "root_height_difference_mm": height_difference_mm,
+        "pass": passed,
+    }
 
 
 def clamp_to_joint_limits(hand, q_batch):
@@ -318,17 +608,45 @@ def chunked_isaac(
     left_q,
     right_q,
     object_dir,
+    active_hands="both",
+    gravity_only=False,
 ):
     parts = []
     for start in range(0, len(left_q), args.isaac_batch_size):
         end = min(start + args.isaac_batch_size, len(left_q))
-        chunk_dir = object_dir / "isaac_chunks" / f"{start:05d}_{end:05d}"
+        chunk_dir = (
+            object_dir
+            / f"isaac_{active_hands}_chunks"
+            / f"{start:05d}_{end:05d}"
+        )
         chunk_dir.mkdir(parents=True, exist_ok=True)
         run_args = SimpleNamespace(
             repo=args.repo,
             isaac_python=args.isaac_python,
             gpu=args.gpu,
             force=args.force,
+            left_robot_name=args.left_robot_name,
+            right_robot_name=args.right_robot_name,
+            gravity=args.gravity,
+            gravity_settle_step=args.gravity_settle_step,
+            staged_gravity=False,
+            independent_directions=(
+                args.independent_directions and not gravity_only
+            ),
+            active_hands=active_hands,
+            gravity_only=gravity_only,
+            support_during_closure=args.support_during_closure,
+            fixture_during_closure=args.fixture_during_closure,
+            lift_height=args.lift_height,
+            lift_step=args.lift_step,
+            min_lift_height=args.min_lift_height,
+            robot_friction=args.robot_friction,
+            object_friction=args.object_friction,
+            finger_effort_limit=args.finger_effort_limit,
+            contact_offset=args.contact_offset,
+            max_gravity_displacement=args.max_gravity_displacement,
+            max_direction_displacement=args.max_direction_displacement,
+            object_density=args.object_density,
         )
         parts.append(
             run_isaac(
@@ -353,30 +671,62 @@ def rejection_reasons(row):
         ("outer_penetration_pass", "outer_penetration"),
         ("inter_hand_clearance_pass", "inter_hand_collision"),
         ("dual_contact_pass", "missing_contact"),
+        ("support_clearance_pass", "hand_support_collision"),
+        ("closure_path_support_pass", "closure_path_support_collision"),
+        ("side_approach_pass", "non_side_approach"),
+        ("lateral_pose_pass", "non_lateral_pose"),
     ):
         if not row[key]:
             reasons.append(label)
     if row["isaac_evaluated"] and not row["isaac_success"]:
         reasons.append("isaac_instability")
+    if row["isaac_evaluated"]:
+        if not row["gravity_success"]:
+            reasons.append("bimanual_gravity_failure")
+        elif (
+            row["left_only_gravity_success"]
+            or row["right_only_gravity_success"]
+        ):
+            reasons.append("single_hand_sufficient")
     if (
         row["isaac_evaluated"]
         and not row["realized_joint_limit_pass"]
     ):
         reasons.append("realized_joint_limit")
-    if (
+    if row["isaac_evaluated"] and row.get(
+        "realized_geometry_audit_error", False
+    ):
+        reasons.append("realized_geometry_audit_error")
+    elif (
         row["isaac_evaluated"]
         and not row["realized_object_penetration_pass"]
     ):
         reasons.append("realized_object_penetration")
     if (
         row["isaac_evaluated"]
+        and not row.get("realized_geometry_audit_error", False)
         and not row["realized_hand_clearance_pass"]
     ):
         reasons.append("realized_hand_collision")
+    if (
+        row["isaac_evaluated"]
+        and not row.get("realized_geometry_audit_error", False)
+        and not row["realized_dual_contact_pass"]
+    ):
+        reasons.append("realized_missing_contact")
+    if row["isaac_evaluated"] and not row["realized_lateral_pose_pass"]:
+        reasons.append("realized_non_lateral_pose")
     return reasons
 
 
-def process_object(args, entry, hand, rolls, object_index):
+def process_object(
+    args,
+    entry,
+    left_hand,
+    right_hand,
+    rolls,
+    object_index,
+):
     object_name = entry["object_name"]
     dataset, name = object_name.split("+")
     mesh_path = (
@@ -387,12 +737,25 @@ def process_object(args, entry, hand, rolls, object_index):
         / f"{name}.stl"
     )
     mesh = trimesh.load_mesh(mesh_path)
+    horizontal_span_mm = float(
+        max(mesh.extents[0], mesh.extents[1]) * 1000.0
+    )
+    if horizontal_span_mm < args.min_object_horizontal_span_mm:
+        raise ValueError(
+            f"{object_name} horizontal span {horizontal_span_mm:.1f} mm is "
+            f"below the required {args.min_object_horizontal_span_mm:.1f} mm"
+        )
     query = trimesh.proximity.ProximityQuery(mesh)
     q_batch = clamp_to_joint_limits(
-        hand,
+        left_hand,
         entry["predict_q"].detach().cpu(),
     )
-    pairs = select_source_pairs(
+    pair_selector = (
+        select_symmetric_sources
+        if args.symmetric_source
+        else select_source_pairs
+    )
+    pairs = pair_selector(
         q_batch,
         args.pairs_per_object,
         args.seed + object_index,
@@ -403,15 +766,23 @@ def process_object(args, entry, hand, rolls, object_index):
     candidate_meta = []
     for pair_index, pair in enumerate(pairs):
         for roll_degrees in rolls:
-            left_candidates.append(
-                q_batch[pair["left_index"]].clone()
-            )
-            right_candidates.append(
-                oppose_pose(
+            if args.opposition_mode == "tabletop":
+                left_candidate, right_candidate = place_opposite_tabletop(
+                    q_batch[pair["left_index"]],
+                    q_batch[pair["right_index"]],
+                    float(roll_degrees),
+                    args.tabletop_left_roll_degrees,
+                    args.tabletop_root_height_mm / 1000.0,
+                )
+            else:
+                left_candidate = q_batch[pair["left_index"]].clone()
+                right_candidate = place_opposite_3d(
+                    q_batch[pair["left_index"]],
                     q_batch[pair["right_index"]],
                     float(roll_degrees),
                 )
-            )
+            left_candidates.append(left_candidate)
+            right_candidates.append(right_candidate)
             candidate_meta.append(
                 {
                     **pair,
@@ -419,10 +790,59 @@ def process_object(args, entry, hand, rolls, object_index):
                     "opposition_roll_degrees": float(roll_degrees),
                 }
             )
+    left_refinement_cache = {}
+    right_refinement_cache = {}
+    for candidate_index, meta in enumerate(candidate_meta):
+        left_key = meta["left_index"]
+        right_key = (
+            meta["left_index"],
+            meta["right_index"],
+            meta["opposition_roll_degrees"],
+        )
+        if left_key not in left_refinement_cache:
+            left_refinement_cache[left_key] = refine_radial_pose(
+                left_hand,
+                mesh,
+                query,
+                left_candidates[candidate_index],
+                args.contact_mm / 1000.0,
+                args.penetration_mm,
+                args.right_max_outward_mm,
+                args.right_outward_step_mm,
+                horizontal_only=(args.opposition_mode == "tabletop"),
+            )
+        if right_key not in right_refinement_cache:
+            right_refinement_cache[right_key] = refine_radial_pose(
+                right_hand,
+                mesh,
+                query,
+                right_candidates[candidate_index],
+                args.contact_mm / 1000.0,
+                args.penetration_mm,
+                args.right_max_outward_mm,
+                args.right_outward_step_mm,
+                horizontal_only=(args.opposition_mode == "tabletop"),
+            )
+        left_refined, _, left_offset_mm = left_refinement_cache[left_key]
+        right_refined, _, right_offset_mm = right_refinement_cache[right_key]
+        left_candidates[candidate_index] = left_refined.clone()
+        right_candidates[candidate_index] = right_refined.clone()
+        meta["left_outward_offset_mm"] = left_offset_mm
+        meta["right_outward_offset_mm"] = right_offset_mm
+
     left_q = torch.stack(left_candidates)
-    right_q = torch.stack(right_candidates)
-    left_outer_q, left_target_q = controller("allegro", left_q)
-    right_outer_q, right_target_q = controller("allegro", right_q)
+    right_q = clamp_to_joint_limits(
+        right_hand,
+        torch.stack(right_candidates),
+    )
+    left_outer_q, left_target_q = controller(
+        left_hand.robot_name,
+        left_q,
+    )
+    right_outer_q, right_target_q = controller(
+        right_hand.robot_name,
+        right_q,
+    )
 
     left_cache = {}
     right_cache = {}
@@ -436,12 +856,13 @@ def process_object(args, entry, hand, rolls, object_index):
     ):
         left_key = meta["left_index"]
         right_key = (
+            meta["left_index"],
             meta["right_index"],
             meta["opposition_roll_degrees"],
         )
         if left_key not in left_cache:
             left_cache[left_key] = pose_pair_metrics(
-                hand,
+                left_hand,
                 mesh,
                 query,
                 left_q[candidate_index],
@@ -449,29 +870,35 @@ def process_object(args, entry, hand, rolls, object_index):
             )
         if right_key not in right_cache:
             right_cache[right_key] = pose_pair_metrics(
-                hand,
+                right_hand,
                 mesh,
                 query,
                 right_q[candidate_index],
                 args.contact_mm / 1000.0,
             )
 
-    clearances = hand_clearances(hand, left_q, right_q)
+    clearances = hand_clearances(
+        left_hand,
+        left_q,
+        right_q,
+        right_hand=right_hand,
+    )
     rows = []
     geometry_indices = []
     for index, meta in enumerate(candidate_meta):
         left_metrics = left_cache[meta["left_index"]]
         right_metrics = right_cache[
             (
+                meta["left_index"],
                 meta["right_index"],
                 meta["opposition_roll_degrees"],
             )
         ]
         outer_clearance, inner_clearance = clearances[index]
         joint_pass = joint_limit_pass(
-            hand,
+            left_hand,
             left_q[index],
-        ) and joint_limit_pass(hand, right_q[index])
+        ) and joint_limit_pass(right_hand, right_q[index])
         outer_penetration_pass = (
             left_metrics["outer"]["penetration_depth_mm"]
             <= args.penetration_mm
@@ -488,17 +915,60 @@ def process_object(args, entry, hand, rolls, object_index):
             outer_clearance > args.clearance_mm
             and inner_clearance > args.clearance_mm
         )
+        support_height_mm = float(mesh.bounds[0, 2] * 1000.0)
+        support_clearance_pass = (
+            not args.support_during_closure
+            or (
+                left_metrics["outer"]["min_world_z_mm"]
+                > support_height_mm + args.support_clearance_mm
+                and left_metrics["inner"]["min_world_z_mm"]
+                > support_height_mm + args.support_clearance_mm
+                and right_metrics["outer"]["min_world_z_mm"]
+                > support_height_mm + args.support_clearance_mm
+                and right_metrics["inner"]["min_world_z_mm"]
+                > support_height_mm + args.support_clearance_mm
+            )
+        )
+        left_path_min_z_mm = closure_path_min_world_z_mm(
+            left_hand,
+            left_outer_q[index],
+            left_target_q[index],
+            args.closure_path_samples,
+        )
+        right_path_min_z_mm = closure_path_min_world_z_mm(
+            right_hand,
+            right_outer_q[index],
+            right_target_q[index],
+            args.closure_path_samples,
+        )
+        closure_path_support_pass = bool(
+            not args.support_during_closure
+            or (
+                left_path_min_z_mm
+                > support_height_mm + args.support_clearance_mm
+                and right_path_min_z_mm
+                > support_height_mm + args.support_clearance_mm
+            )
+        )
         dual_contact_pass = (
             left_metrics["inner"]["min_surface_distance_mm"]
             <= args.contact_mm
             and right_metrics["inner"]["min_surface_distance_mm"]
             <= args.contact_mm
         )
+        lateral = lateral_pose_metrics(left_q[index], right_q[index], args)
+        side_approach = tabletop_side_approach_metrics(
+            left_q[index], right_q[index], mesh, args
+        )
         geometry_pass = (
             joint_pass
             and outer_penetration_pass
             and clearance_pass
             and dual_contact_pass
+            and support_clearance_pass
+            and closure_path_support_pass
+            and side_approach["pass"]
+            and lateral["pass"]
         )
         if geometry_pass:
             geometry_indices.append(index)
@@ -538,9 +1008,55 @@ def process_object(args, entry, hand, rolls, object_index):
                 "outer_hand_clearance_mm": outer_clearance,
                 "inner_hand_clearance_mm": inner_clearance,
                 "inter_hand_clearance_pass": clearance_pass,
+                "support_clearance_pass": support_clearance_pass,
+                "closure_path_support_pass": closure_path_support_pass,
+                "left_closure_path_min_world_z_mm": left_path_min_z_mm,
+                "right_closure_path_min_world_z_mm": right_path_min_z_mm,
+                "side_approach_pass": side_approach["pass"],
+                **{
+                    key: value
+                    for key, value in side_approach.items()
+                    if key != "pass"
+                },
+                "object_horizontal_span_mm": horizontal_span_mm,
+                "support_height_mm": support_height_mm,
+                "left_outer_min_world_z_mm": left_metrics["outer"][
+                    "min_world_z_mm"
+                ],
+                "left_inner_min_world_z_mm": left_metrics["inner"][
+                    "min_world_z_mm"
+                ],
+                "right_outer_min_world_z_mm": right_metrics["outer"][
+                    "min_world_z_mm"
+                ],
+                "right_inner_min_world_z_mm": right_metrics["inner"][
+                    "min_world_z_mm"
+                ],
+                "horizontal_root_cosine": lateral[
+                    "horizontal_root_cosine"
+                ],
+                "max_abs_root_z_mm": lateral["max_abs_root_z_mm"],
+                "root_height_difference_mm": lateral[
+                    "root_height_difference_mm"
+                ],
+                "lateral_pose_pass": lateral["pass"],
                 "geometry_pass": geometry_pass,
                 "isaac_evaluated": False,
                 "isaac_success": False,
+                "gravity_success": False,
+                "gravity_displacement_mm": "",
+                "lift_displacement_mm": "",
+                "object_mass_kg": "",
+                "object_weight_n": "",
+                "left_only_gravity_success": False,
+                "right_only_gravity_success": False,
+                "left_only_settle_displacement_mm": "",
+                "right_only_settle_displacement_mm": "",
+                "left_only_gravity_displacement_mm": "",
+                "right_only_gravity_displacement_mm": "",
+                "left_only_lift_displacement_mm": "",
+                "right_only_lift_displacement_mm": "",
+                "bimanual_required": False,
                 "settle_displacement_mm": "",
                 "final_displacement_mm": "",
                 "max_direction_displacement_mm": "",
@@ -553,13 +1069,21 @@ def process_object(args, entry, hand, rolls, object_index):
                 "left_command_to_final_joint_l2": "",
                 "right_command_to_final_joint_l2": "",
                 "realized_joint_limit_pass": False,
+                "realized_geometry_audit_error": False,
                 "left_realized_penetration_mm": "",
                 "right_realized_penetration_mm": "",
                 "left_realized_surface_distance_mm": "",
                 "right_realized_surface_distance_mm": "",
+                "left_realized_contact_link_count": "",
+                "right_realized_contact_link_count": "",
                 "realized_hand_clearance_mm": "",
                 "realized_object_penetration_pass": False,
                 "realized_hand_clearance_pass": False,
+                "realized_dual_contact_pass": False,
+                "realized_horizontal_root_cosine": "",
+                "realized_max_abs_root_z_mm": "",
+                "realized_root_height_difference_mm": "",
+                "realized_lateral_pose_pass": False,
                 "realized_pose_pass": False,
                 **{
                     f"displacement_{direction}_mm": ""
@@ -587,17 +1111,95 @@ def process_object(args, entry, hand, rolls, object_index):
             right_q[geometry_indices_tensor],
             object_dir,
         )
-        realized_metrics = chunked_realized_geometry(
+        left_only = chunked_isaac(
             args,
             object_name,
-            isaac["left_q_final"],
-            isaac["right_q_final"],
+            left_q[geometry_indices_tensor],
+            right_q[geometry_indices_tensor],
             object_dir,
+            active_hands="left",
+            gravity_only=True,
         )
+        right_only = chunked_isaac(
+            args,
+            object_name,
+            left_q[geometry_indices_tensor],
+            right_q[geometry_indices_tensor],
+            object_dir,
+            active_hands="right",
+            gravity_only=True,
+        )
+        # The dense realized-pose audit is intentionally expensive.  It can
+        # only affect retention after the pair has already passed the full
+        # bimanual rollout and both single-hand ablations, so do not audit
+        # physics-ineligible candidates merely to reject them a second time.
+        realized_isaac_indices = [
+            index
+            for index in range(len(geometry_indices))
+            if bool(isaac["success"][index])
+            and bool(isaac["gravity_success"][index])
+            and not bool(left_only["gravity_success"][index])
+            and not bool(right_only["gravity_success"][index])
+        ]
+        realized_metrics_by_index = {}
+        if realized_isaac_indices:
+            realized_index_tensor = torch.as_tensor(
+                realized_isaac_indices,
+                dtype=torch.long,
+            )
+            eligible_metrics = chunked_realized_geometry(
+                args,
+                object_name,
+                isaac["left_q_final"][realized_index_tensor],
+                isaac["right_q_final"][realized_index_tensor],
+                object_dir,
+            )
+            realized_metrics_by_index = dict(
+                zip(realized_isaac_indices, eligible_metrics)
+            )
         for isaac_index, candidate_index in enumerate(geometry_indices):
             row = rows[candidate_index]
             row["isaac_evaluated"] = True
             row["isaac_success"] = bool(isaac["success"][isaac_index])
+            row["gravity_success"] = bool(
+                isaac["gravity_success"][isaac_index]
+            )
+            row["gravity_displacement_mm"] = float(
+                isaac["gravity_displacement"][isaac_index] * 1000
+            )
+            row["lift_displacement_mm"] = float(
+                isaac["lift_displacement_z"][isaac_index] * 1000
+            )
+            row["object_mass_kg"] = float(
+                isaac["object_mass_kg"][isaac_index]
+            )
+            row["object_weight_n"] = (
+                row["object_mass_kg"] * args.gravity
+            )
+            row["left_only_gravity_success"] = bool(
+                left_only["gravity_success"][isaac_index]
+            )
+            row["right_only_gravity_success"] = bool(
+                right_only["gravity_success"][isaac_index]
+            )
+            for side, ablation in (
+                ("left", left_only),
+                ("right", right_only),
+            ):
+                row[f"{side}_only_settle_displacement_mm"] = float(
+                    ablation["settle_displacement"][isaac_index] * 1000
+                )
+                row[f"{side}_only_gravity_displacement_mm"] = float(
+                    ablation["gravity_displacement"][isaac_index] * 1000
+                )
+                row[f"{side}_only_lift_displacement_mm"] = float(
+                    ablation["lift_displacement_z"][isaac_index] * 1000
+                )
+            row["bimanual_required"] = bool(
+                row["gravity_success"]
+                and not row["left_only_gravity_success"]
+                and not row["right_only_gravity_success"]
+            )
             row["settle_displacement_mm"] = float(
                 isaac["settle_displacement"][isaac_index] * 1000
             )
@@ -641,42 +1243,80 @@ def process_object(args, entry, hand, rolls, object_index):
                     f"{side}_command_to_final_joint_l2"
                 ] = delta["joint_l2"]
 
-            left_realized = realized_metrics[isaac_index]["left"]
-            right_realized = realized_metrics[isaac_index]["right"]
-            realized_clearance = realized_metrics[isaac_index][
-                "clearance_mm"
-            ]
             row["realized_joint_limit_pass"] = (
-                joint_limit_pass(hand, left_q_final)
-                and joint_limit_pass(hand, right_q_final)
+                joint_limit_pass(left_hand, left_q_final)
+                and joint_limit_pass(right_hand, right_q_final)
             )
-            row["left_realized_penetration_mm"] = left_realized[
-                "penetration_depth_mm"
-            ]
-            row["right_realized_penetration_mm"] = right_realized[
-                "penetration_depth_mm"
-            ]
-            row[
-                "left_realized_surface_distance_mm"
-            ] = left_realized["min_surface_distance_mm"]
-            row[
-                "right_realized_surface_distance_mm"
-            ] = right_realized["min_surface_distance_mm"]
-            row["realized_hand_clearance_mm"] = realized_clearance
-            row["realized_object_penetration_pass"] = (
-                left_realized["penetration_depth_mm"]
-                <= args.penetration_mm
-                and right_realized["penetration_depth_mm"]
-                <= args.penetration_mm
-            )
-            row["realized_hand_clearance_pass"] = (
-                realized_clearance > args.clearance_mm
-            )
-            row["realized_pose_pass"] = (
-                row["realized_joint_limit_pass"]
-                and row["realized_object_penetration_pass"]
-                and row["realized_hand_clearance_pass"]
-            )
+            realized_metric = realized_metrics_by_index.get(isaac_index)
+            if realized_metric is not None:
+                audit_error = bool(realized_metric.get("audit_error"))
+                row["realized_geometry_audit_error"] = audit_error
+            else:
+                audit_error = False
+            if realized_metric is not None and not audit_error:
+                left_realized = realized_metric["left"]
+                right_realized = realized_metric["right"]
+                realized_clearance = realized_metric["clearance_mm"]
+                row["left_realized_penetration_mm"] = left_realized[
+                    "penetration_depth_mm"
+                ]
+                row["right_realized_penetration_mm"] = right_realized[
+                    "penetration_depth_mm"
+                ]
+                row[
+                    "left_realized_surface_distance_mm"
+                ] = left_realized["min_surface_distance_mm"]
+                row[
+                    "right_realized_surface_distance_mm"
+                ] = right_realized["min_surface_distance_mm"]
+                row["realized_hand_clearance_mm"] = realized_clearance
+                row["realized_object_penetration_pass"] = (
+                    left_realized["penetration_depth_mm"]
+                    <= args.penetration_mm
+                    and right_realized["penetration_depth_mm"]
+                    <= args.penetration_mm
+                )
+                row["realized_hand_clearance_pass"] = (
+                    realized_clearance > args.clearance_mm
+                )
+                row["realized_dual_contact_pass"] = (
+                    left_realized["min_surface_distance_mm"]
+                    <= args.contact_mm
+                    and right_realized["min_surface_distance_mm"]
+                    <= args.contact_mm
+                    and left_realized.get("contact_link_count", 0)
+                    >= args.min_contact_links
+                    and right_realized.get("contact_link_count", 0)
+                    >= args.min_contact_links
+                )
+                row["left_realized_contact_link_count"] = (
+                    left_realized.get("contact_link_count", 0)
+                )
+                row["right_realized_contact_link_count"] = (
+                    right_realized.get("contact_link_count", 0)
+                )
+                realized_lateral = lateral_pose_metrics(
+                    left_q_final,
+                    right_q_final,
+                    args,
+                )
+                row["realized_horizontal_root_cosine"] = realized_lateral[
+                    "horizontal_root_cosine"
+                ]
+                row["realized_max_abs_root_z_mm"] = realized_lateral[
+                    "max_abs_root_z_mm"
+                ]
+                row[
+                    "realized_root_height_difference_mm"
+                ] = realized_lateral["root_height_difference_mm"]
+                row["realized_lateral_pose_pass"] = realized_lateral["pass"]
+                row["realized_pose_pass"] = (
+                    row["realized_joint_limit_pass"]
+                    and row["realized_object_penetration_pass"]
+                    and row["realized_hand_clearance_pass"]
+                    and row["realized_dual_contact_pass"]
+                    and row["realized_lateral_pose_pass"]
+                )
             realized_q[candidate_index] = (
                 left_q_final,
                 right_q_final,
@@ -689,7 +1329,9 @@ def process_object(args, entry, hand, rolls, object_index):
                     direction_values[direction_index] * 1000
                 )
             row["strict_success"] = (
-                row["isaac_success"] and row["realized_pose_pass"]
+                row["isaac_success"]
+                and row["realized_pose_pass"]
+                and row["bimanual_required"]
             )
 
     retained = []
@@ -756,8 +1398,26 @@ def object_summary(object_name, rows):
             "inter_hand_clearance_pass"
         ),
         "dual_contact_pass_rate": rate("dual_contact_pass"),
+        "support_clearance_pass_rate": rate("support_clearance_pass"),
         "geometry_pass_rate": rate("geometry_pass"),
         "isaac_success_rate": rate("isaac_success"),
+        "bimanual_required_rate_evaluated": float(
+            np.mean(
+                [bool(row["bimanual_required"]) for row in evaluated]
+            )
+        )
+        if evaluated
+        else 0.0,
+        "realized_dual_contact_rate_evaluated": float(
+            np.mean(
+                [
+                    bool(row["realized_dual_contact_pass"])
+                    for row in evaluated
+                ]
+            )
+        )
+        if evaluated
+        else 0.0,
         "realized_pose_pass_rate_evaluated": float(
             np.mean(
                 [bool(row["realized_pose_pass"]) for row in evaluated]
@@ -765,6 +1425,10 @@ def object_summary(object_name, rows):
         )
         if evaluated
         else 0.0,
+        "num_realized_geometry_audit_errors": sum(
+            bool(row.get("realized_geometry_audit_error", False))
+            for row in rows
+        ),
         "strict_success_rate": rate("strict_success"),
         "num_retained": sum(row["strict_success"] for row in rows),
         "top_rejection_reason": (
@@ -777,9 +1441,8 @@ def write_report(path, summaries, total_retained, config):
     lines = [
         "# Bimanual pilot dataset generation report",
         "",
-        "> Scope: two identical Allegro left-hand actors. This is not a",
-        "> physical left/right Allegro dataset because the repository has no",
-        "> Allegro right-hand URDF.",
+        "> Scope: validated Allegro left/right simulation assets, gravity-on",
+        "> simultaneous closure, and explicit single-hand ablations.",
         "",
         "## Protocol",
         "",
@@ -791,7 +1454,29 @@ def write_report(path, summaries, total_retained, config):
         f"- Isaac batch size: {config['isaac_batch_size']}.",
         "- Isolated realized-pose mesh-audit subprocess batch size: "
         f"{config['realized_batch_size']}.",
-        "- Isaac gravity: disabled, matching the legacy TRO-Grasp protocol.",
+        f"- Isaac gravity: {config['gravity']} m/s^2 from the first frame.",
+        "- Both hands start closing simultaneously; there is no hidden",
+        "  gravity-off pre-closing phase.",
+        (
+            "- An explicit pose fixture holds the object during closure and "
+            "is released before validation."
+        )
+        if config.get("fixture_during_closure")
+        else "- No pose fixture is used during closure.",
+        (
+            "- A fixed table supports the object during closure and remains "
+            "in the scene during lift."
+        )
+        if config.get("support_during_closure")
+        else "- No support surface is used.",
+        f"- Both wrist targets follow the same smooth upward trajectory of "
+        f"{config.get('lift_height', 0.0) * 1000:.1f} mm over "
+        f"{config.get('lift_step', 0)} simulation steps.",
+        f"- A lift is accepted only if object vertical displacement is >= "
+        f"{config.get('min_lift_height', 0.0) * 1000:.1f} mm.",
+        "- Every disturbance direction starts from the same settled state.",
+        "- Retained poses must fail both left-only and right-only gravity",
+        "  hold tests, so the object empirically requires two hands.",
         "- Exact penetration of the controller target is recorded as a",
         "  diagnostic but is not a pre-simulation rejection criterion;",
         "  contact dynamics stop the fingers before that unconstrained",
@@ -804,22 +1489,29 @@ def write_report(path, summaries, total_retained, config):
         "- Before saving, the realized poses are checked again for joint",
         f"  limits, <= {config['penetration_mm']} mm hand-object penetration,",
         f"  and > {config['clearance_mm']} mm inter-hand clearance.",
+        f"- Both realized hands must remain within {config['contact_mm']} mm",
+        "  of the object after contact dynamics settle.",
+        "- A realized-pose mesh audit that fails even as an isolated",
+        "  sample is conservatively rejected and counted as an audit error.",
         "  Controller seeds, open poses, and target poses are",
         "  retained separately for auditability.",
         "",
         "## Funnel by object",
         "",
-        "| Object | Candidates | Geometry | Isaac | Realized pose | "
-        "Strict | Retained | "
+        "| Object | Candidates | Geometry | Isaac | Two-hand required | "
+        "Realized contact | Realized pose | Audit errors | Strict | Retained | "
         "Top rejection |",
-        "|---|---:|---:|---:|---:|---:|---:|---|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in summaries:
         lines.append(
             f"| `{row['object_name']}` | {row['num_candidates']} | "
             f"{row['geometry_pass_rate']:.1%} | "
             f"{row['isaac_success_rate']:.1%} | "
+            f"{row['bimanual_required_rate_evaluated']:.1%} | "
+            f"{row['realized_dual_contact_rate_evaluated']:.1%} | "
             f"{row['realized_pose_pass_rate_evaluated']:.1%} | "
+            f"{row['num_realized_geometry_audit_errors']} | "
             f"{row['strict_success_rate']:.1%} | "
             f"{row['num_retained']} | "
             f"{row['top_rejection_reason']} |"
@@ -835,14 +1527,13 @@ def write_report(path, summaries, total_retained, config):
             f"- Overall strict retention: "
             f"{total_retained / max(total_candidates, 1):.1%}.",
             "",
-            "## Limitations before formal use",
+            "## Limitations before scaling",
             "",
-            "- Add or construct a verified Allegro right-hand URDF if the",
-            "  target hardware is a true left/right pair.",
-            "- Add gravity-on robustness checks.",
-            "- Add single-hand removal ablations to quantify whether both",
-            "  hands are necessary.",
             "- Manually inspect representative and worst-case samples.",
+            "- This is a pilot-scale simulation result; expand object and",
+            "  pose coverage before using it as a training corpus.",
+            "- Deployment still requires a feasible approach trajectory and",
+            "  validation of simulator-to-real transfer.",
         ]
     )
     path.write_text("\n".join(lines) + "\n")
@@ -858,40 +1549,120 @@ def main():
     parser.add_argument(
         "--source-vis",
         type=Path,
-        default=Path(
-            "graph_exp/bimanual_large_object/single_hand_baseline/"
-            "allegro_unconditioned/vis.pt"
-        ),
+        default=Path("data/bimanual/source_vis.pt"),
     )
     parser.add_argument(
         "--object-split",
         type=Path,
-        default=Path(
-            "graph_exp/bimanual_large_object/object_selection/"
-            "bimanual_object_split.json"
-        ),
+        default=Path("config/bimanual_object_split.json"),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(
-            "graph_exp/bimanual_data/pilot_v4_realized_strict"
+            "graph_exp/bimanual_data/pilot_v5_lr_g98_strict"
         ),
     )
     parser.add_argument(
         "--isaac-python",
         type=Path,
-        required=True,
-        help="Python executable from the Isaac Gym environment.",
+        default=Path(os.environ.get("ISAAC_PYTHON", "python")),
     )
     parser.add_argument("--objects", nargs="+")
     parser.add_argument("--pairs-per-object", type=int, default=80)
     parser.add_argument("--roll-count", type=int, default=8)
+    parser.add_argument(
+        "--roll-values-degrees",
+        type=float,
+        nargs="+",
+        help=(
+            "Optional explicit wrist-roll angles in degrees. When supplied, "
+            "these values replace the evenly spaced --roll-count grid."
+        ),
+    )
+    parser.add_argument(
+        "--roll-offset-degrees",
+        type=float,
+        default=0.0,
+        help=(
+            "Offset the evenly spaced wrist-roll grid. Use half a grid "
+            "step to search new angles without repeating an earlier run."
+        ),
+    )
     parser.add_argument("--isaac-batch-size", type=int, default=24)
     parser.add_argument("--realized-batch-size", type=int, default=24)
     parser.add_argument("--penetration-mm", type=float, default=5.0)
     parser.add_argument("--clearance-mm", type=float, default=2.0)
     parser.add_argument("--contact-mm", type=float, default=5.0)
+    parser.add_argument("--left-robot-name", default="allegro_left")
+    parser.add_argument("--right-robot-name", default="allegro_right")
+    parser.add_argument("--gravity", type=float, default=9.8)
+    parser.add_argument("--gravity-settle-step", type=int, default=100)
+    parser.add_argument(
+        "--support-during-closure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--fixture-during-closure",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--lift-height", type=float, default=0.05)
+    parser.add_argument("--lift-step", type=int, default=100)
+    parser.add_argument("--min-lift-height", type=float, default=0.03)
+    parser.add_argument("--robot-friction", type=float, default=3.0)
+    parser.add_argument("--object-friction", type=float, default=3.0)
+    parser.add_argument("--finger-effort-limit", type=float)
+    parser.add_argument("--contact-offset", type=float, default=0.01)
+    parser.add_argument("--max-gravity-displacement", type=float, default=0.02)
+    parser.add_argument("--max-direction-displacement", type=float, default=0.02)
+    parser.add_argument("--object-density", type=float, default=500.0)
+    parser.add_argument(
+        "--symmetric-source",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--min-contact-links", type=int, default=1)
+    parser.add_argument("--right-max-outward-mm", type=float, default=40.0)
+    parser.add_argument("--right-outward-step-mm", type=float, default=10.0)
+    parser.add_argument(
+        "--opposition-mode",
+        choices=("tabletop", "full_3d"),
+        default="tabletop",
+    )
+    parser.add_argument("--support-clearance-mm", type=float, default=1.0)
+    parser.add_argument("--root-support-clearance-mm", type=float, default=20.0)
+    parser.add_argument("--min-side-root-radius-fraction", type=float, default=0.9)
+    parser.add_argument("--max-root-height-fraction", type=float, default=1.15)
+    parser.add_argument("--closure-path-samples", type=int, default=5)
+    parser.add_argument("--min-object-horizontal-span-mm", type=float, default=0.0)
+    parser.add_argument(
+        "--tabletop-left-roll-degrees",
+        type=float,
+        default=180.0,
+    )
+    parser.add_argument(
+        "--tabletop-root-height-mm",
+        type=float,
+        default=20.0,
+    )
+    parser.add_argument(
+        "--lateral-opposition-cosine",
+        type=float,
+        default=-0.8,
+    )
+    parser.add_argument("--lateral-max-root-z-mm", type=float, default=40.0)
+    parser.add_argument(
+        "--lateral-max-height-diff-mm",
+        type=float,
+        default=30.0,
+    )
+    parser.add_argument(
+        "--independent-directions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--seed", type=int, default=20260730)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--force", action="store_true")
@@ -913,34 +1684,88 @@ def main():
     if missing:
         raise KeyError(f"Objects missing from source vis: {missing}")
 
-    rolls = np.linspace(
-        0.0,
-        180.0,
-        args.roll_count,
-        endpoint=False,
+    if args.roll_values_degrees:
+        rolls = np.mod(
+            np.asarray(args.roll_values_degrees, dtype=float),
+            180.0,
+        )
+        # Keep the requested order while removing exact modulo-180 repeats.
+        rolls = np.asarray(list(dict.fromkeys(rolls.tolist())), dtype=float)
+    else:
+        rolls = np.linspace(
+            0.0,
+            180.0,
+            args.roll_count,
+            endpoint=False,
+        )
+        rolls = np.mod(rolls + args.roll_offset_degrees, 180.0)
+    left_hand = create_hand_model(
+        args.left_robot_name,
+        torch.device("cpu"),
     )
-    hand = create_hand_model("allegro", torch.device("cpu"))
+    right_hand = create_hand_model(
+        args.right_robot_name,
+        torch.device("cpu"),
+    )
     all_rows = []
     all_retained = []
     summaries = []
 
     config = {
-        "dataset_version": "bimanual_pilot_v4_realized_strict",
-        "robot_setup": "two_identical_allegro_left_actors",
+        "dataset_version": "bimanual_pilot_v6_tabletop_smooth_lift",
+        "robot_setup": "allegro_left_plus_validated_mirrored_right",
+        "left_robot_name": args.left_robot_name,
+        "right_robot_name": args.right_robot_name,
         "train_objects": object_names,
         "held_out_objects": split["held_out_test"],
         "pairs_per_object": args.pairs_per_object,
-        "roll_count": args.roll_count,
+        "roll_count": int(len(rolls)),
+        "roll_values_degrees": [float(value) for value in rolls],
+        "roll_offset_degrees": args.roll_offset_degrees,
         "isaac_batch_size": args.isaac_batch_size,
         "realized_batch_size": args.realized_batch_size,
         "penetration_mm": args.penetration_mm,
         "clearance_mm": args.clearance_mm,
         "contact_mm": args.contact_mm,
+        "right_max_outward_mm": args.right_max_outward_mm,
+        "right_outward_step_mm": args.right_outward_step_mm,
+        "opposition_mode": args.opposition_mode,
+        "support_clearance_mm": args.support_clearance_mm,
+        "root_support_clearance_mm": args.root_support_clearance_mm,
+        "min_side_root_radius_fraction": args.min_side_root_radius_fraction,
+        "max_root_height_fraction": args.max_root_height_fraction,
+        "closure_path_samples": args.closure_path_samples,
+        "min_object_horizontal_span_mm": args.min_object_horizontal_span_mm,
+        "tabletop_left_roll_degrees": args.tabletop_left_roll_degrees,
+        "tabletop_root_height_mm": args.tabletop_root_height_mm,
+        "lateral_opposition_cosine": args.lateral_opposition_cosine,
+        "lateral_max_root_z_mm": args.lateral_max_root_z_mm,
+        "lateral_max_height_diff_mm": args.lateral_max_height_diff_mm,
         "seed": args.seed,
-        "gravity_enabled": False,
+        "gravity_enabled": True,
+        "gravity": args.gravity,
+        "gravity_from_first_frame": True,
+        "simultaneous_closure": True,
+        "support_during_closure": args.support_during_closure,
+        "fixture_during_closure": args.fixture_during_closure,
+        "lift_height": args.lift_height,
+        "lift_step": args.lift_step,
+        "lift_trajectory": "linear_synchronized_common_z",
+        "min_lift_height": args.min_lift_height,
+        "robot_friction": args.robot_friction,
+        "object_friction": args.object_friction,
+        "finger_effort_limit_nm": args.finger_effort_limit,
+        "contact_offset_m": args.contact_offset,
+        "max_gravity_displacement_m": args.max_gravity_displacement,
+        "max_direction_displacement_m": args.max_direction_displacement,
+        "symmetric_source": args.symmetric_source,
+        "min_contact_links_per_hand": args.min_contact_links,
+        "object_density_kg_m3": args.object_density,
+        "single_hand_ablation_required": True,
+        "independent_directions": args.independent_directions,
         "disturbance_directions": list(DIRECTION_NAMES),
         "settle_threshold_mm": 50.0,
-        "disturbance_threshold_mm": 20.0,
+        "disturbance_threshold_mm": args.max_direction_displacement * 1000,
     }
     (args.output_dir / "manifest.json").write_text(
         json.dumps(config, indent=2) + "\n"
@@ -962,7 +1787,8 @@ def main():
             rows, retained = process_object(
                 args,
                 lookup[object_name],
-                hand,
+                left_hand,
+                right_hand,
                 rolls,
                 object_index,
             )

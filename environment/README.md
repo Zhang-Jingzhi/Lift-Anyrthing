@@ -6,8 +6,10 @@ The project deliberately uses two environments:
 - `isaac`: Isaac Gym Preview 4 physics validation.
 
 The files in this directory contain no machine-specific prefixes or local file
-URLs. They describe the working RTX 3070 reproduction environment and are the
-recommended starting point for the RTX 4090 server.
+URLs. They describe the known-working reproduction environment and are the
+recommended minimal starting point for the RTX 4090 server. These manifests,
+rather than multi-gigabyte Conda archives, are versioned because they are
+portable, inspectable, and much smaller.
 
 ## 1. Main TRO-Grasp environment
 
@@ -41,8 +43,8 @@ conda activate isaac
 python -m pip install -r environment/requirements-isaac.txt
 ```
 
-Download **Isaac Gym Preview 4** from NVIDIA separately. It is not committed to
-this repository:
+Download **Isaac Gym Preview 4** from NVIDIA separately. Its licensed package
+and installed files are not committed to this repository:
 
 ```bash
 tar -xzf IsaacGym_Preview_4_Package.tar.gz
@@ -70,22 +72,28 @@ validation as a subprocess. Pass the second environment explicitly:
 ```bash
 conda activate tro
 python generate_bimanual_pilot.py \
-  --isaac-python /path/to/miniconda3/envs/isaac/bin/python \
+  --isaac-python "$ISAAC_PYTHON" \
   [other arguments]
 ```
 
 ## 3. Data and checkpoints
 
 Neither datasets nor checkpoints are stored in Git. Download the official
-archives using the links in the root `README.md`, then place them in:
+archives using the links in the root `README.md`. Place the official data and
+the separately downloaded bimanual data in:
 
 ```text
 TRO-Grasp-Reproduction/
 ├── data/
+│   └── bimanual/
+│       ├── bimanual_dataset.pt
+│       └── source_vis.pt       # only needed to generate more pairs
 └── ckpt/
 ```
 
-The reproduction-specific experiment outputs are also intentionally omitted.
+Only `vqvae.ckpt` is required for bimanual training. Other checkpoints are
+needed only for resume/evaluation. The reproduction-specific experiment
+outputs are intentionally omitted.
 
 ## 4. Working environment reference
 

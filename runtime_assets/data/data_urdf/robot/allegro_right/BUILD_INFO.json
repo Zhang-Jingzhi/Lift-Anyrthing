@@ -1,0 +1,11 @@
+{
+  "asset": "allegro_right",
+  "source": "data/data_urdf/robot/allegro/allegro_hand_left_extended.urdf",
+  "output": "data/data_urdf/robot/allegro_right/allegro_hand_right_extended.urdf",
+  "mirror_plane": "palm-local y=0 (y -> -y)",
+  "virtual_world_pose_joints_mirrored": false,
+  "mesh_count": 11,
+  "source_sha256": "f7c136d5677687939afb5ea65bffbfc57fa2311ea67b5e318e2658d69294a185",
+  "output_sha256": "f9dd07f79ec271be6925dfa4a444a229795f762f33783d5ae61a73023cafab91",
+  "point_cloud": "data/PointCloud/robot/allegro_right.pt"
+}

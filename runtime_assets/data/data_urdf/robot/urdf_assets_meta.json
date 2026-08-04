@@ -1,0 +1,24 @@
+{
+    "urdf_path": {
+        "xhand": "data/data_urdf/robot/xhand/xhand_right_cvx_hull_dummy_ball.urdf",
+        "allegro": "data/data_urdf/robot/allegro/allegro_hand_left_extended.urdf",
+        "allegro_left": "data/data_urdf/robot/allegro/allegro_hand_left_extended.urdf",
+        "allegro_right": "data/data_urdf/robot/allegro_right/allegro_hand_right_extended.urdf",
+        "barrett": "data/data_urdf/robot/barrett/model_extended_no_mimic.urdf",
+        "ezgripper": "data/data_urdf/robot/ezgripper/ezgripper_extended.urdf",
+        "robotiq_3finger": "data/data_urdf/robot/robotiq_3finger/urdf/robotiq_3finger_description_extended.urdf",
+        "shadowhand": "data/data_urdf/robot/shadowhand/shadow_hand_right_extended.urdf",
+        "leaphand": "data/data_urdf/robot/leaphand/leap_hand_right_extended.urdf"
+    },
+    "meshes_path": {
+        "xhand": "data/data_urdf/robot/xhand/meshes/",
+        "allegro": "data/data_urdf/robot/allegro/meshes/",
+        "allegro_left": "data/data_urdf/robot/allegro/meshes/",
+        "allegro_right": "data/data_urdf/robot/allegro_right/meshes/",
+        "barrett": "data/data_urdf/robot/barrett/meshes",
+        "ezgripper": "data/data_urdf/robot/ezgripper/meshes",
+        "robotiq_3finger": "data/data_urdf/robot/robotiq_3finger/meshes",
+        "shadowhand": "data/data_urdf/robot/shadowhand/meshes",
+        "leaphand": "data/data_urdf/robot/leaphand/meshes"
+    }
+}

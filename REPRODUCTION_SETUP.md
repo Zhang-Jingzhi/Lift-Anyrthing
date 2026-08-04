@@ -9,10 +9,10 @@ reproduction and bimanual-data work. It is based on upstream commit
 
 - Upstream model, dataset, training, inference, visualization, and validation
   code.
-- Ubuntu 22.04 / RTX 3070 compatibility changes.
+- Ubuntu compatibility changes and a portable RTX 4090 starter config.
 - Checkpoint evaluation and training-monitoring utilities.
 - Large-object analysis and bimanual candidate generation/validation code.
-- RTX 3070 smoke-test and long-training configurations.
+- RTX 3070 history plus a conservative RTX 4090 training configuration.
 - Portable environment descriptions under `environment/`.
 - A text-only reproduction report.
 
@@ -30,12 +30,13 @@ checkpoint download links remain in `README.md`.
 
 ## Bimanual status
 
-The current bimanual pipeline generates opposed two-hand candidates, runs
-Isaac six-direction perturbation validation, and performs realized-mesh
-penetration auditing. The current pilot uses two identical Allegro left-hand
-actors because a verified mirrored right-hand URDF is not yet available.
-Treat it as a pipeline-validation dataset rather than hardware-faithful
-left/right-hand training data.
+The current bimanual pipeline uses a geometrically and Isaac-validated Allegro
+left/right pair. It generates opposed lateral tabletop candidates under
+gravity, runs simultaneous closure and lift, applies six independent
+disturbances, audits realized-mesh penetration/contact/hand clearance, rejects
+single-hand-supported solutions, and supports repeated-validation gates. The
+small custom runtime overlay is tracked under `runtime_assets/`; generated
+datasets and rollouts remain external.
 
-See [environment/README.md](environment/README.md) for server reconstruction.
-
+See [MIGRATE_TO_4090.md](MIGRATE_TO_4090.md) for the minimal server migration
+and [environment/README.md](environment/README.md) for environment rebuilding.

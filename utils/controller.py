@@ -13,7 +13,7 @@ def get_link_dir(robot_name, joint_name):
     if joint_name.startswith('virtual'):
         return None
 
-    if robot_name == 'allegro':
+    if robot_name in ('allegro', 'allegro_left', 'allegro_right'):
         if joint_name in ['joint_0.0', 'joint_4.0', 'joint_8.0', 'joint_13.0']:
             return None
         link_dir = torch.tensor([0, 0, 1], dtype=torch.float32)

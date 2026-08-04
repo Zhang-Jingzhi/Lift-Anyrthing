@@ -1,0 +1,15 @@
+{
+  "development": [
+    "ycb+bleach_cleanser",
+    "ycb+wood_block",
+    "contactdb+piggy_bank",
+    "ycb+power_drill",
+    "contactdb+cube_large",
+    "contactdb+cylinder_large"
+  ],
+  "held_out_test": [
+    "ycb+pitcher_base",
+    "ycb+cracker_box",
+    "ycb+toy_airplane"
+  ]
+}

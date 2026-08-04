@@ -1,5 +1,6 @@
 import os
 import argparse
+import csv
 import torch
 import wandb
 from datetime import datetime
@@ -14,6 +15,15 @@ def save_checkpoint(checkpoint, path):
     temporary_path = f"{path}.tmp"
     torch.save(checkpoint, temporary_path)
     os.replace(temporary_path, path)
+
+
+def append_metric_row(path, row):
+    exists = os.path.isfile(path)
+    with open(path, "a", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=list(row))
+        if not exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def prepare_input(batch, device):
@@ -75,6 +85,11 @@ def train(config):
         gamma=config.train.lr_gamma
     )
 
+    warm_start_from = config.train.get("warm_start_from", False)
+    if config.train.resume_from and warm_start_from:
+        raise ValueError(
+            "Use either resume_from or warm_start_from, not both"
+        )
     if config.train.resume_from:
         ckpt = torch.load(config.train.resume_from)
         model.load_state_dict(ckpt["model_state"])
@@ -82,10 +97,24 @@ def train(config):
         scheduler.load_state_dict(ckpt["scheduler_state"])
         start_epoch = ckpt["epoch"]
         print(f"Resumed from {config.train.resume_from} at epoch {start_epoch}")
+    elif warm_start_from:
+        ckpt = torch.load(warm_start_from, map_location=device)
+        incompatible = model.load_state_dict(
+            ckpt["model_state"],
+            strict=False,
+        )
+        print(
+            f"Warm-started model weights from {warm_start_from}; "
+            f"missing={list(incompatible.missing_keys)}, "
+            f"unexpected={list(incompatible.unexpected_keys)}",
+            flush=True,
+        )
+        start_epoch = 0
     else:
         start_epoch = 0
 
     num_epochs = config.train.epochs
+    metric_path = os.path.join(save_dir, "batch_metrics.csv")
     stop_after_epoch = config.train.get("stop_after_epoch", None)
     max_batches_per_epoch = config.train.get("max_batches_per_epoch", None)
     log_interval = config.train.get("log_interval", 100)
@@ -103,6 +132,12 @@ def train(config):
             loss = loss_dict['loss_total']
             optimizer.zero_grad()
             loss.backward()
+            grad_clip_norm = config.train.get("grad_clip_norm", None)
+            if grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    float(grad_clip_norm),
+                )
             optimizer.step()
             epoch_loss += loss.item()
             num_batches += 1
@@ -110,6 +145,14 @@ def train(config):
             log_data = {k: v.item() for k, v in loss_dict.items()}
             log_data.update({"lr": scheduler.get_last_lr()[0]})
             wandb.log(log_data)
+            append_metric_row(
+                metric_path,
+                {
+                    "epoch": epoch + 1,
+                    "batch": num_batches,
+                    **log_data,
+                },
+            )
             if num_batches == 1 or num_batches % log_interval == 0:
                 print(
                     f"Epoch {epoch + 1}/{num_epochs} "
@@ -167,6 +210,12 @@ if __name__ == '__main__':
         help="override train.resume_from",
     )
     parser.add_argument(
+        "--warm-start-from",
+        type=str,
+        default=None,
+        help="load model weights only and start a fresh optimizer",
+    )
+    parser.add_argument(
         "--stop-after-epoch",
         type=int,
         default=None,
@@ -194,6 +243,8 @@ if __name__ == '__main__':
     config = OmegaConf.load(args.config)
     if args.resume_from is not None:
         config.train.resume_from = args.resume_from
+    if args.warm_start_from is not None:
+        config.train.warm_start_from = args.warm_start_from
     if args.stop_after_epoch is not None:
         config.train.stop_after_epoch = args.stop_after_epoch
     if args.epochs is not None:

@@ -20,6 +20,9 @@ env/
 *.pt
 *.zip
 
+# Small, versioned runtime overlay (mirrored hand point clouds are intentional)
+!/runtime_assets/**/*.pt
+
 # Experiment outputs and caches
 /graph_exp/
 /wandb/
@@ -31,4 +34,3 @@ res.txt
 # OS/editor files
 .DS_Store
 *~
-

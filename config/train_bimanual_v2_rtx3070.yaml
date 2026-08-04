@@ -1,0 +1,91 @@
+dataset:
+  type: "bimanual_pairs"
+  pair_file: "data/bimanual/bimanual_dataset.pt"
+  batch_size: 4
+  num_points: 512
+  num_workers: 0
+  object_pc_type: "random"
+  sampling_mode: "sample_uniform"
+  swap_probability: 0.0
+
+model:
+  vqvae_cfg:
+    n_embeddings: 1024
+    embedding_dim: 16
+    num_point: 25
+    num_dim: 64
+    local_decode_pts: 40
+    beta: 0.25
+  vqvae_pretrain: "ckpt/vqvae.ckpt"
+  object_patch: 25
+  max_link_node: 42
+  robot_links:
+    allegro_bimanual: 42
+  link_embedding_repeats:
+    allegro_bimanual:
+      source: "allegro"
+      repeats: 2
+  role_anchor_scale: 2.0
+  bps_config:
+    bps_type: "random_uniform"
+    n_bps_points: 124
+    radius: 1.0
+    n_dims: 3
+  N_t_training: 1
+  diffusion_config:
+    scheduling: "linear"
+    M: 1000
+    beta_min: 0.0001
+    beta_max: 0.02
+    ddim_steps: 100
+    ddim_eta: 1.0
+    lambda: 0.2
+  denoiser_config:
+    t_embed_dim: 200
+    V_object_dims: [3, 1, 64]
+    V_robot_dims: [3, 3, 128]
+    E_or_dims: [3, 3]
+    E_rr_dims: [3, 3]
+    v_conv_dim: 192
+    e_conv_dim: 192
+    num_layers: 4
+    c_atten_head: 32
+    v_out_hidden_dims: [192, 128]
+    e_out_hidden_dims: [192, 128]
+    se3_out_dim: [3, 3]
+  inference_config: false
+  embodiment:
+    - "allegro"
+  mode: "train"
+  loss_config:
+    trans_weight: 1.0
+    rot_weight: 1.0
+    swap_equivariance_weight: 0.0
+    penetration_weight: 1.0
+    contact_weight: 0.1
+    inter_hand_weight: 1.0
+    opposition_weight: 1.0
+    root_relative_weight: 5.0
+    clean_pose_weight: 2.0
+    minimum_x0_weight: 0.05
+    high_noise_fraction: 0.5
+    high_noise_start_ratio: 0.75
+    hand_links_per_actor: 21
+    contact_threshold_m: 0.005
+    inter_hand_clearance_m: 0.005
+    root_separation_radius_ratio: 1.5
+
+train:
+  lr: 1e-4
+  epochs: 300
+  lr_step: 40
+  lr_gamma: 0.8
+  save_interval: 10
+  save_dir: "graph_exp/bimanual_training/v2_fixed_roles_rtx3070"
+  project_name: "tro-grasp-bimanual-v2"
+  resume_from: false
+  max_batches_per_epoch: 603
+  log_interval: 100
+  save_latest_every_epoch: true
+  wandb_mode: "offline"
+  grad_clip_norm: 1.0

@@ -20,6 +20,11 @@ class BimanualPairDataset(Dataset):
         pair_file,
         num_points=512,
         object_pc_type="random",
+        sampling_mode="object_balanced",
+        swap_probability=0.0,
+        objects=None,
+        limit_per_object=None,
+        object_pc_noise_std=0.002,
     ):
         if object_pc_type != "random":
             raise ValueError(
@@ -27,17 +32,70 @@ class BimanualPairDataset(Dataset):
             )
         self.batch_size = batch_size
         self.num_points = num_points
+        self.object_pc_noise_std = float(object_pc_noise_std)
+        if self.object_pc_noise_std < 0:
+            raise ValueError("object_pc_noise_std must be non-negative")
+        self.sampling_mode = sampling_mode
+        self.swap_probability = float(swap_probability)
+        if not 0.0 <= self.swap_probability <= 1.0:
+            raise ValueError("swap_probability must be in [0, 1]")
+        if sampling_mode not in {
+            "object_balanced",
+            "sample_uniform",
+            "sample_cycle",
+        }:
+            raise ValueError(
+                "sampling_mode must be object_balanced, sample_uniform, "
+                "or sample_cycle"
+            )
         self.hand = create_hand_model("allegro", torch.device("cpu"))
-        self.samples = torch.load(pair_file, map_location="cpu")
+        loaded = torch.load(
+            pair_file,
+            map_location="cpu",
+            weights_only=False,
+        )
+        self.samples = (
+            loaded["samples"]
+            if isinstance(loaded, dict) and "samples" in loaded
+            else loaded
+        )
+        if objects:
+            allowed_objects = set(objects)
+            self.samples = [
+                sample
+                for sample in self.samples
+                if sample["object_name"] in allowed_objects
+            ]
         if not self.samples:
             raise ValueError(f"No filtered pairs found in {pair_file}")
+        self.samples_by_object = {}
+        for sample in self.samples:
+            self.samples_by_object.setdefault(
+                sample["object_name"],
+                [],
+            ).append(sample)
+        if limit_per_object is not None:
+            limit = int(limit_per_object)
+            if limit <= 0:
+                raise ValueError("limit_per_object must be positive")
+            self.samples_by_object = {
+                object_name: sorted(
+                    samples,
+                    key=lambda sample: int(sample["candidate_index"]),
+                )[:limit]
+                for object_name, samples in self.samples_by_object.items()
+            }
+            self.samples = [
+                sample
+                for object_name in sorted(self.samples_by_object)
+                for sample in self.samples_by_object[object_name]
+            ]
+        self.object_names = sorted(self.samples_by_object)
 
         repo = Path(__file__).resolve().parent.parent
         self.object_pcs = {}
         self.object_normals = {}
-        for object_name in sorted(
-            {sample["object_name"] for sample in self.samples}
-        ):
+        for object_name in self.object_names:
             dataset, name = object_name.split("+")
             mesh_path = (
                 repo
@@ -56,6 +114,21 @@ class BimanualPairDataset(Dataset):
                 mesh.face_normals[face_indices],
                 dtype=torch.float32,
             )
+
+    def object_name_for_slot(self, index, slot):
+        if self.sampling_mode == "object_balanced":
+            global_slot = index * self.batch_size + slot
+            return self.object_names[global_slot % len(self.object_names)]
+        return None
+
+    def sample_for_slot(self, index, slot):
+        if self.sampling_mode == "sample_cycle":
+            global_slot = index * self.batch_size + slot
+            return self.samples[global_slot % len(self.samples)]
+        object_name = self.object_name_for_slot(index, slot)
+        if object_name is None:
+            return random.choice(self.samples)
+        return random.choice(self.samples_by_object[object_name])
 
     @staticmethod
     def _matrix_to_pose(matrices):
@@ -106,11 +179,14 @@ class BimanualPairDataset(Dataset):
             self.hand.links_pc,
         )
 
-        for _ in range(self.batch_size):
-            sample = random.choice(self.samples)
+        for slot in range(self.batch_size):
+            sample = self.sample_for_slot(index, slot)
             object_name = sample["object_name"]
             left_target = sample["left_q"].clone()
             right_target = sample["right_q"].clone()
+            swap_applied = random.random() < self.swap_probability
+            if swap_applied:
+                left_target, right_target = right_target, left_target
             left_initial = self.hand.get_initial_q(left_target)
             right_initial = self.hand.get_initial_q(right_target)
 
@@ -128,7 +204,11 @@ class BimanualPairDataset(Dataset):
             object_normal = self.object_normals[object_name][
                 point_indices
             ].clone()
-            object_pc += torch.randn_like(object_pc) * 0.002
+            if self.object_pc_noise_std:
+                object_pc += (
+                    torch.randn_like(object_pc)
+                    * self.object_pc_noise_std
+                )
 
             result["robot_name"].append("allegro_bimanual")
             result["object_name"].append(object_name)
@@ -172,6 +252,11 @@ def create_bimanual_dataloader(cfg):
         pair_file=cfg.pair_file,
         num_points=cfg.get("num_points", 512),
         object_pc_type=cfg.get("object_pc_type", "random"),
+        sampling_mode=cfg.get("sampling_mode", "object_balanced"),
+        swap_probability=cfg.get("swap_probability", 0.0),
+        objects=cfg.get("objects", None),
+        limit_per_object=cfg.get("limit_per_object", None),
+        object_pc_noise_std=cfg.get("object_pc_noise_std", 0.002),
     )
     return DataLoader(
         dataset,

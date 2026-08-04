@@ -1,0 +1,16 @@
+<robot name="root">
+  <link name="link_original">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="cube_xlarge.stl" scale="1 1 1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="coacd_allinone.obj" scale="1 1 1"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
