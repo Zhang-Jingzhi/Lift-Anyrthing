@@ -12,6 +12,26 @@ For the minimal RTX 4090 transfer, use
 small custom left/right-hand runtime overlay are kept here; datasets remain on
 Google Drive and Isaac Gym Preview 4 is installed separately from NVIDIA.
 
+## Collaboration and repository scope
+
+This repository combines the original TRO-Grasp training/evaluation code with
+the RTX 4090 Tianji + dual-XHand development workflow under `migration_4090/`.
+For the current XHand pipeline, start with:
+
+- `MIGRATE_TO_4090.md` for environment and asset setup;
+- `migration_4090/generate_xhand_compact_candidate_bank_v2.py` for candidate
+  grasp-pose generation;
+- `migration_4090/validate_xhand_fullbody_isaac.py` for strict Isaac Gym
+  PhysX validation; and
+- `migration_4090/xhand_compact_formal_1200_v1_protocol.json` for the formal
+  two-method, six-object, 1,200-sample protocol.
+
+Datasets, checkpoints, Isaac Gym Preview 4, Tianji/XHand URDF and mesh assets,
+logs, caches, and generated results are intentionally kept outside GitHub and
+must be configured or downloaded separately. Do not commit `graph_exp/`,
+`wandb/`, generated `.pt`/`.ckpt` files, simulator packages, or local logs and
+caches.
+
 Official Code Repository for **$\mathcal{T(R,O)}$ Grasp: Efficient Graph Diffusion of Robot-Object Spatial Transformation for Cross-Embodiment Dexterous Grasping**.
 
 [Xin Fei](https://xinfei21.github.io/web/)<sup>1,2\*</sup>, [Zhixuan Xu](https://ariszxxu.github.io/)<sup>1,2\*</sup>, Huaicong Fang<sup>3</sup>, [Tianrui Zhang](https://ztr583.github.io/)<sup>1</sup>, [Lin Shao](https://linsats.github.io/)<sup>1,2</sup>
