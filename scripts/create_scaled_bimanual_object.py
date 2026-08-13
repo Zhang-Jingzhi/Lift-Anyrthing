@@ -3,6 +3,7 @@
 
 import argparse
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import torch
@@ -32,7 +33,19 @@ def main():
         / args.dataset
         / args.target_object
     )
-    target.mkdir(parents=True, exist_ok=True)
+    output_files = [
+        target / f"{args.target_object}.stl",
+        target / "coacd_allinone.obj",
+        target / "coacd_decomposed_object_one_link.urdf",
+        args.output_vis,
+    ]
+    existing = [path for path in output_files if path.exists()]
+    if target.exists() or existing:
+        raise RuntimeError(
+            "Refusing to overwrite scaled-object output: "
+            + ", ".join(str(path) for path in ([target] + existing))
+        )
+    target.mkdir(parents=True, exist_ok=False)
     scale = np.asarray(args.scale, dtype=np.float64)
 
     visual = trimesh.load_mesh(
@@ -46,6 +59,22 @@ def main():
     )
     collision.vertices *= scale
     collision.export(target / "coacd_allinone.obj")
+
+    visual_name = escape(f"{args.target_object}.stl")
+    urdf = f"""<robot name="root">
+  <link name="link_original">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="{visual_name}" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="coacd_allinone.obj" scale="1 1 1"/></geometry>
+    </collision>
+  </link>
+</robot>
+"""
+    (target / "coacd_decomposed_object_one_link.urdf").write_text(urdf)
 
     source_entries = torch.load(
         args.source_vis, map_location="cpu", weights_only=False

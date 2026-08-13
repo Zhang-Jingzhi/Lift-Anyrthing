@@ -365,7 +365,11 @@ def pose_pair_metrics(
     q,
     contact_threshold,
 ):
-    outer, inner = controller(hand.robot_name, q.unsqueeze(0))
+    outer, inner = controller(
+        hand.robot_name,
+        q.unsqueeze(0),
+        hand=hand,
+    )
     return {
         "outer": exact_pose_metrics(
             hand,
@@ -483,8 +487,10 @@ def refine_radial_pose(
     q,
     contact_threshold,
     penetration_mm,
+    min_offset_mm,
     max_offset_mm,
     offset_step_mm,
+    fine_offset_step_mm,
     horizontal_only=False,
 ):
     """Translate a seed radially outward without altering finger joints."""
@@ -494,10 +500,23 @@ def refine_radial_pose(
         direction[2] = 0.0
         direction /= direction.norm().clamp_min(1e-8)
     best = None
-    offsets = np.arange(
-        0.0,
+    coarse_offsets = np.arange(
+        min_offset_mm,
         max_offset_mm + 0.5 * offset_step_mm,
         offset_step_mm,
+    )
+    fine_offsets = np.arange(
+        max(min_offset_mm, -offset_step_mm),
+        min(max_offset_mm, offset_step_mm) + 0.5 * fine_offset_step_mm,
+        fine_offset_step_mm,
+    )
+    offsets = {
+        round(float(value), 10)
+        for value in np.concatenate([coarse_offsets, fine_offsets])
+    }
+    offsets = sorted(
+        offsets,
+        key=lambda value: (abs(float(value)), float(value) > 0.0),
     )
     for offset_mm in offsets:
         candidate = q.clone()
@@ -521,7 +540,7 @@ def refine_radial_pose(
                 0.0,
                 inner_distance - contact_threshold * 1000.0,
             )
-            + 1e-4 * float(offset_mm)
+            + 1e-4 * abs(float(offset_mm))
         )
         if best is None or score < best[0]:
             best = (score, candidate, metrics, float(offset_mm))
@@ -544,7 +563,12 @@ def joint_limit_pass(hand, q):
     )
 
 
-def lateral_pose_metrics(left_q, right_q, args):
+def lateral_pose_metrics(
+    left_q,
+    right_q,
+    args,
+    height_difference_limit_mm=None,
+):
     left_xy = left_q[:2]
     right_xy = right_q[:2]
     cosine = float(
@@ -555,12 +579,14 @@ def lateral_pose_metrics(left_q, right_q, args):
         torch.maximum(left_q[2].abs(), right_q[2].abs()) * 1000
     )
     height_difference_mm = float((left_q[2] - right_q[2]).abs() * 1000)
+    if height_difference_limit_mm is None:
+        height_difference_limit_mm = args.lateral_max_height_diff_mm
     passed = (
         args.opposition_mode != "tabletop"
         or (
             cosine <= args.lateral_opposition_cosine
             and max_abs_z_mm <= args.lateral_max_root_z_mm
-            and height_difference_mm <= args.lateral_max_height_diff_mm
+            and height_difference_mm <= height_difference_limit_mm
         )
     )
     return {
@@ -647,6 +673,18 @@ def chunked_isaac(
             max_gravity_displacement=args.max_gravity_displacement,
             max_direction_displacement=args.max_direction_displacement,
             object_density=args.object_density,
+            object_vhacd=args.object_vhacd,
+            object_vhacd_resolution=args.object_vhacd_resolution,
+            object_vhacd_max_convex_hulls=(
+                args.object_vhacd_max_convex_hulls
+            ),
+            object_vhacd_max_vertices=args.object_vhacd_max_vertices,
+            object_multicollision=args.object_multicollision,
+            object_vhacd_high_v1=args.object_vhacd_high_v1,
+            object_vhacd_visual_high_v2=(
+                args.object_vhacd_visual_high_v2
+            ),
+            capture_contacts=False,
         )
         parts.append(
             run_isaac(
@@ -690,6 +728,7 @@ def rejection_reasons(row):
             reasons.append("single_hand_sufficient")
     if (
         row["isaac_evaluated"]
+        and row.get("realized_geometry_audited", False)
         and not row["realized_joint_limit_pass"]
     ):
         reasons.append("realized_joint_limit")
@@ -699,22 +738,29 @@ def rejection_reasons(row):
         reasons.append("realized_geometry_audit_error")
     elif (
         row["isaac_evaluated"]
+        and row.get("realized_geometry_audited", False)
         and not row["realized_object_penetration_pass"]
     ):
         reasons.append("realized_object_penetration")
     if (
         row["isaac_evaluated"]
+        and row.get("realized_geometry_audited", False)
         and not row.get("realized_geometry_audit_error", False)
         and not row["realized_hand_clearance_pass"]
     ):
         reasons.append("realized_hand_collision")
     if (
         row["isaac_evaluated"]
+        and row.get("realized_geometry_audited", False)
         and not row.get("realized_geometry_audit_error", False)
         and not row["realized_dual_contact_pass"]
     ):
         reasons.append("realized_missing_contact")
-    if row["isaac_evaluated"] and not row["realized_lateral_pose_pass"]:
+    if (
+        row["isaac_evaluated"]
+        and row.get("realized_geometry_audited", False)
+        and not row["realized_lateral_pose_pass"]
+    ):
         reasons.append("realized_non_lateral_pose")
     return reasons
 
@@ -737,6 +783,11 @@ def process_object(
         / f"{name}.stl"
     )
     mesh = trimesh.load_mesh(mesh_path)
+    realized_lateral_height_limit_mm = max(
+        args.lateral_max_height_diff_mm,
+        float(mesh.extents[2] * 1000.0)
+        * args.realized_lateral_max_height_fraction,
+    )
     horizontal_span_mm = float(
         max(mesh.extents[0], mesh.extents[1]) * 1000.0
     )
@@ -750,12 +801,13 @@ def process_object(
         left_hand,
         entry["predict_q"].detach().cpu(),
     )
+    precomputed_candidates = entry.get("precomputed_bimanual_candidates")
     pair_selector = (
         select_symmetric_sources
         if args.symmetric_source
         else select_source_pairs
     )
-    pairs = pair_selector(
+    pairs = [] if precomputed_candidates else pair_selector(
         q_batch,
         args.pairs_per_object,
         args.seed + object_index,
@@ -807,8 +859,10 @@ def process_object(
                 left_candidates[candidate_index],
                 args.contact_mm / 1000.0,
                 args.penetration_mm,
+                args.radial_min_offset_mm,
                 args.right_max_outward_mm,
                 args.right_outward_step_mm,
+                args.radial_fine_step_mm,
                 horizontal_only=(args.opposition_mode == "tabletop"),
             )
         if right_key not in right_refinement_cache:
@@ -819,8 +873,10 @@ def process_object(
                 right_candidates[candidate_index],
                 args.contact_mm / 1000.0,
                 args.penetration_mm,
+                args.radial_min_offset_mm,
                 args.right_max_outward_mm,
                 args.right_outward_step_mm,
+                args.radial_fine_step_mm,
                 horizontal_only=(args.opposition_mode == "tabletop"),
             )
         left_refined, _, left_offset_mm = left_refinement_cache[left_key]
@@ -830,18 +886,129 @@ def process_object(
         meta["left_outward_offset_mm"] = left_offset_mm
         meta["right_outward_offset_mm"] = right_offset_mm
 
+    if precomputed_candidates:
+        left_precomputed = precomputed_candidates["left_q"]
+        right_precomputed = precomputed_candidates["right_q"]
+        if left_precomputed.shape != right_precomputed.shape:
+            raise ValueError("Precomputed left/right candidate shapes differ")
+        if left_precomputed.ndim != 2 or left_precomputed.shape[1] != 22:
+            raise ValueError(
+                "Precomputed bimanual candidates must have shape (N, 22)"
+            )
+        left_candidates = [q.clone() for q in left_precomputed]
+        right_candidates = [q.clone() for q in right_precomputed]
+        metadata = precomputed_candidates.get("metadata", [])
+        candidate_meta = []
+        for index in range(len(left_candidates)):
+            row = dict(metadata[index]) if index < len(metadata) else {}
+            left_source_index = row.pop("left_index", -1)
+            right_source_index = row.pop("right_index", -1)
+            candidate_meta.append(
+                {
+                    "source_pair_index": row.pop("source_pair_index", index),
+                    # Geometry caches must be unique per precomputed pose.
+                    # The source seed indices are provenance, not pose IDs:
+                    # several region-optimized candidates can share a seed
+                    # while having different roots and therefore different
+                    # exact mesh metrics.
+                    "left_index": index,
+                    "right_index": index,
+                    "left_source_index": left_source_index,
+                    "right_source_index": right_source_index,
+                    "opposition_roll_degrees": row.pop(
+                        "opposition_roll_degrees", 0.0
+                    ),
+                    "left_outward_offset_mm": row.pop(
+                        "left_outward_offset_mm", 0.0
+                    ),
+                    "right_outward_offset_mm": row.pop(
+                        "right_outward_offset_mm", 0.0
+                    ),
+                    **row,
+                }
+            )
+        if args.refine_precomputed_radially:
+            left_radial_cache = {}
+            right_radial_cache = {}
+
+            def radial_key(q):
+                return tuple(
+                    torch.round(q.detach().cpu() * 1e7)
+                    .to(torch.int64)
+                    .tolist()
+                )
+
+            for index in range(len(left_candidates)):
+                left_key = radial_key(left_candidates[index])
+                right_key = radial_key(right_candidates[index])
+                if left_key not in left_radial_cache:
+                    left_radial_cache[left_key] = refine_radial_pose(
+                        left_hand,
+                        mesh,
+                        query,
+                        left_candidates[index],
+                        args.contact_mm / 1000.0,
+                        args.penetration_mm,
+                        args.radial_min_offset_mm,
+                        args.right_max_outward_mm,
+                        args.right_outward_step_mm,
+                        args.radial_fine_step_mm,
+                        horizontal_only=(args.opposition_mode == "tabletop"),
+                    )
+                if right_key not in right_radial_cache:
+                    right_radial_cache[right_key] = refine_radial_pose(
+                        right_hand,
+                        mesh,
+                        query,
+                        right_candidates[index],
+                        args.contact_mm / 1000.0,
+                        args.penetration_mm,
+                        args.radial_min_offset_mm,
+                        args.right_max_outward_mm,
+                        args.right_outward_step_mm,
+                        args.radial_fine_step_mm,
+                        horizontal_only=(args.opposition_mode == "tabletop"),
+                    )
+                left_refined, _, left_offset_mm = left_radial_cache[left_key]
+                right_refined, _, right_offset_mm = right_radial_cache[
+                    right_key
+                ]
+                left_candidates[index] = left_refined
+                right_candidates[index] = right_refined
+                candidate_meta[index]["left_outward_offset_mm"] = (
+                    left_offset_mm
+                )
+                candidate_meta[index]["right_outward_offset_mm"] = (
+                    right_offset_mm
+                )
+                candidate_meta[index]["precomputed_radial_refinement"] = True
+        print(
+            f"[{object_name}] using {len(left_candidates)} precomputed "
+            "bimanual candidates",
+            flush=True,
+        )
+
     left_q = torch.stack(left_candidates)
     right_q = clamp_to_joint_limits(
         right_hand,
         torch.stack(right_candidates),
     )
+    if args.joint_seed_offset_rad:
+        left_q[:, 6:] += float(args.joint_seed_offset_rad)
+        right_q[:, 6:] += float(args.joint_seed_offset_rad)
+        left_q = clamp_to_joint_limits(left_hand, left_q)
+        right_q = clamp_to_joint_limits(right_hand, right_q)
+    for meta in candidate_meta:
+        meta["joint_seed_offset_rad"] = float(args.joint_seed_offset_rad)
     left_outer_q, left_target_q = controller(
         left_hand.robot_name,
         left_q,
+        hand=left_hand,
     )
     right_outer_q, right_target_q = controller(
         right_hand.robot_name,
         right_q,
+        hand=right_hand,
     )
 
     left_cache = {}
@@ -1069,6 +1236,7 @@ def process_object(
                 "left_command_to_final_joint_l2": "",
                 "right_command_to_final_joint_l2": "",
                 "realized_joint_limit_pass": False,
+                "realized_geometry_audited": False,
                 "realized_geometry_audit_error": False,
                 "left_realized_penetration_mm": "",
                 "right_realized_penetration_mm": "",
@@ -1111,40 +1279,23 @@ def process_object(
             right_q[geometry_indices_tensor],
             object_dir,
         )
-        left_only = chunked_isaac(
-            args,
-            object_name,
-            left_q[geometry_indices_tensor],
-            right_q[geometry_indices_tensor],
-            object_dir,
-            active_hands="left",
-            gravity_only=True,
-        )
-        right_only = chunked_isaac(
-            args,
-            object_name,
-            left_q[geometry_indices_tensor],
-            right_q[geometry_indices_tensor],
-            object_dir,
-            active_hands="right",
-            gravity_only=True,
-        )
-        # The dense realized-pose audit is intentionally expensive.  It can
-        # only affect retention after the pair has already passed the full
-        # bimanual rollout and both single-hand ablations, so do not audit
-        # physics-ineligible candidates merely to reject them a second time.
-        realized_isaac_indices = [
+        # A realized-pose geometry failure cannot be rescued by either
+        # single-hand ablation.  Audit full-physics successes first, then run
+        # the two expensive ablations only for candidates that can still
+        # become strict successes.  This is especially important for local
+        # pools whose bimanual stability is high but whose realized bilateral
+        # contact rate is low.
+        physics_isaac_indices = [
             index
             for index in range(len(geometry_indices))
             if bool(isaac["success"][index])
             and bool(isaac["gravity_success"][index])
-            and not bool(left_only["gravity_success"][index])
-            and not bool(right_only["gravity_success"][index])
         ]
         realized_metrics_by_index = {}
-        if realized_isaac_indices:
+        ablation_isaac_indices = []
+        if physics_isaac_indices:
             realized_index_tensor = torch.as_tensor(
-                realized_isaac_indices,
+                physics_isaac_indices,
                 dtype=torch.long,
             )
             eligible_metrics = chunked_realized_geometry(
@@ -1155,8 +1306,74 @@ def process_object(
                 object_dir,
             )
             realized_metrics_by_index = dict(
-                zip(realized_isaac_indices, eligible_metrics)
+                zip(physics_isaac_indices, eligible_metrics)
             )
+            for isaac_index in physics_isaac_indices:
+                realized_metric = realized_metrics_by_index[isaac_index]
+                if bool(realized_metric.get("audit_error")):
+                    continue
+                left_realized = realized_metric["left"]
+                right_realized = realized_metric["right"]
+                left_q_final = isaac["left_q_final"][isaac_index]
+                right_q_final = isaac["right_q_final"][isaac_index]
+                realized_lateral = lateral_pose_metrics(
+                    left_q_final,
+                    right_q_final,
+                    args,
+                    height_difference_limit_mm=(
+                        realized_lateral_height_limit_mm
+                    ),
+                )
+                realized_pose_pass = (
+                    joint_limit_pass(left_hand, left_q_final)
+                    and joint_limit_pass(right_hand, right_q_final)
+                    and left_realized["penetration_depth_mm"]
+                    <= args.penetration_mm
+                    and right_realized["penetration_depth_mm"]
+                    <= args.penetration_mm
+                    and realized_metric["clearance_mm"] > args.clearance_mm
+                    and left_realized["min_surface_distance_mm"]
+                    <= args.contact_mm
+                    and right_realized["min_surface_distance_mm"]
+                    <= args.contact_mm
+                    and left_realized.get("contact_link_count", 0)
+                    >= args.min_contact_links
+                    and right_realized.get("contact_link_count", 0)
+                    >= args.min_contact_links
+                    and realized_lateral["pass"]
+                )
+                if realized_pose_pass:
+                    ablation_isaac_indices.append(isaac_index)
+        ablation_results_by_index = {}
+        if ablation_isaac_indices:
+            ablation_index_tensor = torch.as_tensor(
+                ablation_isaac_indices,
+                dtype=torch.long,
+            )
+            left_only = chunked_isaac(
+                args,
+                object_name,
+                left_q[geometry_indices_tensor][ablation_index_tensor],
+                right_q[geometry_indices_tensor][ablation_index_tensor],
+                object_dir,
+                active_hands="left",
+                gravity_only=True,
+            )
+            right_only = chunked_isaac(
+                args,
+                object_name,
+                left_q[geometry_indices_tensor][ablation_index_tensor],
+                right_q[geometry_indices_tensor][ablation_index_tensor],
+                object_dir,
+                active_hands="right",
+                gravity_only=True,
+            )
+            ablation_results_by_index = {
+                isaac_index: (left_only, right_only, ablation_index)
+                for ablation_index, isaac_index in enumerate(
+                    ablation_isaac_indices
+                )
+            }
         for isaac_index, candidate_index in enumerate(geometry_indices):
             row = rows[candidate_index]
             row["isaac_evaluated"] = True
@@ -1176,27 +1393,34 @@ def process_object(
             row["object_weight_n"] = (
                 row["object_mass_kg"] * args.gravity
             )
-            row["left_only_gravity_success"] = bool(
-                left_only["gravity_success"][isaac_index]
-            )
-            row["right_only_gravity_success"] = bool(
-                right_only["gravity_success"][isaac_index]
-            )
-            for side, ablation in (
-                ("left", left_only),
-                ("right", right_only),
-            ):
-                row[f"{side}_only_settle_displacement_mm"] = float(
-                    ablation["settle_displacement"][isaac_index] * 1000
+            ablation_result = ablation_results_by_index.get(isaac_index)
+            if ablation_result is not None:
+                left_only, right_only, ablation_index = ablation_result
+                row["left_only_gravity_success"] = bool(
+                    left_only["gravity_success"][ablation_index]
                 )
-                row[f"{side}_only_gravity_displacement_mm"] = float(
-                    ablation["gravity_displacement"][isaac_index] * 1000
+                row["right_only_gravity_success"] = bool(
+                    right_only["gravity_success"][ablation_index]
                 )
-                row[f"{side}_only_lift_displacement_mm"] = float(
-                    ablation["lift_displacement_z"][isaac_index] * 1000
-                )
+                for side, ablation in (
+                    ("left", left_only),
+                    ("right", right_only),
+                ):
+                    row[f"{side}_only_settle_displacement_mm"] = float(
+                        ablation["settle_displacement"][ablation_index]
+                        * 1000
+                    )
+                    row[f"{side}_only_gravity_displacement_mm"] = float(
+                        ablation["gravity_displacement"][ablation_index]
+                        * 1000
+                    )
+                    row[f"{side}_only_lift_displacement_mm"] = float(
+                        ablation["lift_displacement_z"][ablation_index]
+                        * 1000
+                    )
             row["bimanual_required"] = bool(
                 row["gravity_success"]
+                and ablation_result is not None
                 and not row["left_only_gravity_success"]
                 and not row["right_only_gravity_success"]
             )
@@ -1249,6 +1473,7 @@ def process_object(
             )
             realized_metric = realized_metrics_by_index.get(isaac_index)
             if realized_metric is not None:
+                row["realized_geometry_audited"] = True
                 audit_error = bool(realized_metric.get("audit_error"))
                 row["realized_geometry_audit_error"] = audit_error
             else:
@@ -1299,6 +1524,9 @@ def process_object(
                     left_q_final,
                     right_q_final,
                     args,
+                    height_difference_limit_mm=(
+                        realized_lateral_height_limit_mm
+                    ),
                 )
                 row["realized_horizontal_root_cosine"] = realized_lateral[
                     "horizontal_root_cosine"
@@ -1594,6 +1822,15 @@ def main():
     parser.add_argument("--penetration-mm", type=float, default=5.0)
     parser.add_argument("--clearance-mm", type=float, default=2.0)
     parser.add_argument("--contact-mm", type=float, default=5.0)
+    parser.add_argument(
+        "--joint-seed-offset-rad",
+        type=float,
+        default=0.0,
+        help=(
+            "Add a uniform offset to all 16 left/right finger joint seeds "
+            "after wrist radial refinement and before strict geometry audit."
+        ),
+    )
     parser.add_argument("--left-robot-name", default="allegro_left")
     parser.add_argument("--right-robot-name", default="allegro_right")
     parser.add_argument("--gravity", type=float, default=9.8)
@@ -1619,13 +1856,70 @@ def main():
     parser.add_argument("--max-direction-displacement", type=float, default=0.02)
     parser.add_argument("--object-density", type=float, default=500.0)
     parser.add_argument(
+        "--object-vhacd",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Run V-HACD on the object's all-in-one collision mesh before "
+            "simulation so non-convex objects are not reduced to one hull."
+        ),
+    )
+    parser.add_argument("--object-vhacd-resolution", type=int, default=300000)
+    parser.add_argument(
+        "--object-vhacd-max-convex-hulls", type=int, default=64
+    )
+    parser.add_argument("--object-vhacd-max-vertices", type=int, default=64)
+    parser.add_argument(
+        "--object-multicollision",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Load the generated multi-collision URDF containing one shape "
+            "per original convex CoACD component."
+        ),
+    )
+    parser.add_argument(
+        "--object-vhacd-high-v1",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the protocol-unique high-resolution V-HACD asset name.",
+    )
+    parser.add_argument(
+        "--object-vhacd-visual-high-v2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use the versioned high-resolution V-HACD asset sourced from "
+            "the exact visual STL."
+        ),
+    )
+    parser.add_argument(
         "--symmetric-source",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--refine-precomputed-radially",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply the same translation-only radial contact repair to "
+            "precomputed bimanual candidates before geometry/physics audit."
+        ),
+    )
     parser.add_argument("--min-contact-links", type=int, default=1)
     parser.add_argument("--right-max-outward-mm", type=float, default=40.0)
     parser.add_argument("--right-outward-step-mm", type=float, default=10.0)
+    parser.add_argument("--radial-fine-step-mm", type=float, default=2.0)
+    parser.add_argument(
+        "--radial-min-offset-mm",
+        type=float,
+        default=0.0,
+        help=(
+            "Allow negative radial offsets for contact-gap repair while "
+            "retaining the same penetration checks."
+        ),
+    )
     parser.add_argument(
         "--opposition-mode",
         choices=("tabletop", "full_3d"),
@@ -1659,6 +1953,16 @@ def main():
         default=30.0,
     )
     parser.add_argument(
+        "--realized-lateral-max-height-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Scale-aware final-rollout hand-root height-difference limit as "
+            "a fraction of object height. The larger of this value and "
+            "--lateral-max-height-diff-mm is used only after physics."
+        ),
+    )
+    parser.add_argument(
         "--independent-directions",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1668,6 +1972,40 @@ def main():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
+
+    if args.object_vhacd_high_v1 and not args.object_vhacd:
+        parser.error("--object-vhacd-high-v1 requires --object-vhacd")
+    if args.object_vhacd_visual_high_v2 and not args.object_vhacd:
+        parser.error("--object-vhacd-visual-high-v2 requires --object-vhacd")
+    if args.object_vhacd_high_v1 and args.object_vhacd_visual_high_v2:
+        parser.error("Choose exactly one versioned V-HACD asset")
+    if args.object_vhacd_high_v1 and args.object_multicollision:
+        parser.error(
+            "--object-vhacd-high-v1 and --object-multicollision are mutually exclusive"
+        )
+    if args.object_vhacd_visual_high_v2 and args.object_multicollision:
+        parser.error(
+            "--object-vhacd-visual-high-v2 and --object-multicollision are "
+            "mutually exclusive"
+        )
+    if args.object_vhacd_high_v1 and (
+        args.object_vhacd_resolution != 1_000_000
+        or args.object_vhacd_max_convex_hulls != 128
+        or args.object_vhacd_max_vertices != 64
+    ):
+        parser.error(
+            "high-v1 requires resolution=1000000, max-convex-hulls=128, "
+            "max-vertices=64"
+        )
+    if args.object_vhacd_visual_high_v2 and (
+        args.object_vhacd_resolution != 1_000_000
+        or args.object_vhacd_max_convex_hulls != 128
+        or args.object_vhacd_max_vertices != 64
+    ):
+        parser.error(
+            "visual-high-v2 requires resolution=1000000, "
+            "max-convex-hulls=128, max-vertices=64"
+        )
 
     args.repo = args.repo.resolve()
     for key in ("source_vis", "object_split", "output_dir"):
@@ -1727,7 +2065,10 @@ def main():
         "penetration_mm": args.penetration_mm,
         "clearance_mm": args.clearance_mm,
         "contact_mm": args.contact_mm,
+        "joint_seed_offset_rad": args.joint_seed_offset_rad,
         "right_max_outward_mm": args.right_max_outward_mm,
+        "radial_min_offset_mm": args.radial_min_offset_mm,
+        "radial_fine_step_mm": args.radial_fine_step_mm,
         "right_outward_step_mm": args.right_outward_step_mm,
         "opposition_mode": args.opposition_mode,
         "support_clearance_mm": args.support_clearance_mm,
@@ -1741,6 +2082,9 @@ def main():
         "lateral_opposition_cosine": args.lateral_opposition_cosine,
         "lateral_max_root_z_mm": args.lateral_max_root_z_mm,
         "lateral_max_height_diff_mm": args.lateral_max_height_diff_mm,
+        "realized_lateral_max_height_fraction": (
+            args.realized_lateral_max_height_fraction
+        ),
         "seed": args.seed,
         "gravity_enabled": True,
         "gravity": args.gravity,
@@ -1759,8 +2103,31 @@ def main():
         "max_gravity_displacement_m": args.max_gravity_displacement,
         "max_direction_displacement_m": args.max_direction_displacement,
         "symmetric_source": args.symmetric_source,
+        "refine_precomputed_radially": args.refine_precomputed_radially,
         "min_contact_links_per_hand": args.min_contact_links,
         "object_density_kg_m3": args.object_density,
+        "object_collision_mode": (
+            "vhacd_visual_high_v2"
+            if args.object_vhacd_visual_high_v2
+            else (
+                "vhacd_high_v1"
+                if args.object_vhacd_high_v1
+                else (
+                    "coacd_multicollision_v1"
+                    if args.object_multicollision
+                    else (
+                        "vhacd" if args.object_vhacd else "legacy_single_hull"
+                    )
+                )
+            )
+        ),
+        "object_vhacd": args.object_vhacd,
+        "object_vhacd_high_v1": args.object_vhacd_high_v1,
+        "object_vhacd_visual_high_v2": args.object_vhacd_visual_high_v2,
+        "object_vhacd_resolution": args.object_vhacd_resolution,
+        "object_vhacd_max_convex_hulls": args.object_vhacd_max_convex_hulls,
+        "object_vhacd_max_vertices": args.object_vhacd_max_vertices,
+        "object_multicollision": args.object_multicollision,
         "single_hand_ablation_required": True,
         "independent_directions": args.independent_directions,
         "disturbance_directions": list(DIRECTION_NAMES),

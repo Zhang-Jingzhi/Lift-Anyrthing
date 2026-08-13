@@ -44,7 +44,19 @@ class HandModel:
         self.meshes = load_link_geometries(robot_name, self.urdf_path, self.pk_chain.get_link_names())
 
         self.vertices = {}
-        removed_links = json.load(open(os.path.join(ROOT_DIR, 'data/removed_links.json')))[robot_name]
+        with open(os.path.join(ROOT_DIR, 'data/removed_links.json')) as file:
+            removed_links_by_robot = json.load(file)
+        removed_links_name = (
+            'allegro'
+            if robot_name in ('allegro_left', 'allegro_right')
+            else robot_name
+        )
+        if removed_links_name not in removed_links_by_robot:
+            raise KeyError(
+                f"No removed-links entry for robot {robot_name!r}; "
+                f"available={sorted(removed_links_by_robot)}"
+            )
+        removed_links = removed_links_by_robot[removed_links_name]
         for link_name, link_mesh in self.meshes.items():
             if link_name in removed_links:  # remove links unrelated to contact
                 continue

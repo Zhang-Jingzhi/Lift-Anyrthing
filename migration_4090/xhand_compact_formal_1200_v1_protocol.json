@@ -1,0 +1,45 @@
+{
+  "schema": "xhand_compact_formal_1200_protocol_v1",
+  "target_total": 1200,
+  "methods": {
+    "baseline": 600,
+    "bidex_v3": 600
+  },
+  "objects": [
+    "sphere_large_xhand_290mm_v1",
+    "cube_xlarge",
+    "cracker_box",
+    "bleach_cleanser",
+    "pitcher_base",
+    "power_drill"
+  ],
+  "target_per_object_per_method": 100,
+  "random_size_plan": {
+    "sphere": [1, 2, 3, 4, 5],
+    "cube": [1, 2, 3, 4, 5],
+    "cracker": [0, 1, 2, 3, 4],
+    "bleach": [0, 1, 2, 3, 4],
+    "pitcher": [1, 2, 3, 4, 5],
+    "drill": [0, 1, 2, 3, 4]
+  },
+  "target_per_selected_size": 20,
+  "smoke_anchor_disabled": true,
+  "physics": {
+    "engine": "Isaac Gym Preview 4 PhysX GPU",
+    "gravity_m_s2": 9.8,
+    "friction": 2.0,
+    "target_object_mass_kg": 0.55,
+    "table_support": true,
+    "simultaneous_two_hand_closure": true,
+    "minimum_lift_height_mm": 30.0,
+    "maximum_gravity_displacement_mm": 10.0,
+    "maximum_six_direction_displacement_mm": 15.0,
+    "maximum_penetration_mm": 2.0,
+    "require_left_contact": true,
+    "require_right_contact": true,
+    "require_left_only_failure": true,
+    "require_right_only_failure": true,
+    "strict_repeat_count": 3,
+    "required_repeat_success_rate": 1.0
+  }
+}
