@@ -203,7 +203,17 @@ def main():
     figure = plt.figure(figsize=(18, 6.4))
     for index, azimuth in enumerate((35, 155, 275), start=1):
         axis = figure.add_subplot(1, 3, index, projection="3d")
-        add_mesh(axis, object_mesh, (0.94, 0.44, 0.61), 0.70, 6500)
+        # Do not sparsely subsample a large object's triangles: selecting
+        # isolated faces makes a scaled mesh look perforated and visually
+        # smaller than it is.  Full object meshes in this project are modest
+        # enough to rasterize directly for the one-sample review render.
+        add_mesh(
+            axis,
+            object_mesh,
+            (0.94, 0.44, 0.61),
+            0.82,
+            max_faces=len(object_mesh.faces),
+        )
         if table_mesh is not None:
             add_mesh(axis, table_mesh, (0.55, 0.57, 0.61), 0.32, 12)
         left_points = left_mesh.sample(4500)
@@ -316,17 +326,30 @@ def main():
             f" | finger effort<="
             f"{manifest['finger_effort_limit_nm']:.2f} Nm"
         )
+    selection_method = manifest.get("visual_selection_method")
+    selection_label = manifest.get("visual_selection_label")
+    selection_prefix = ""
+    if selection_method or selection_label:
+        selection_prefix = " | ".join(
+            value
+            for value in (
+                str(selection_method).upper() if selection_method else None,
+                selection_label,
+                sample["object_name"],
+            )
+            if value
+        ) + "\n"
     figure.suptitle(
-        f"{args.pose_stage.capitalize()} tabletop lateral Allegro left/right bimanual grasp | "
+        f"{selection_prefix}"
+        f"{args.pose_stage.capitalize()} Allegro left/right grasp | "
         f"lift={metrics.get('lift_displacement_mm', float('nan')):.2f} mm | "
         f"gravity={metrics['gravity_displacement_mm']:.2f} mm | "
         f"6-dir={metrics['max_direction_displacement_mm']:.2f} mm"
         f"{physics_label}\n"
-        f"pink=object, blue=left, green=right, yellow circles=left contacts, "
-        f"purple diamonds=right contacts (within "
-        f"{contact_threshold*1000:.0f} mm | "
+        f"pink=object, blue=left, green=right | contact band "
+        f"{contact_threshold*1000:.0f} mm: "
         f"L={len(left_contacts)} ({left_minimum*1000:.2f} mm), "
-        f"R={len(right_contacts)} ({right_minimum*1000:.2f} mm))",
+        f"R={len(right_contacts)} ({right_minimum*1000:.2f} mm)",
         fontsize=14,
         fontweight="bold",
     )

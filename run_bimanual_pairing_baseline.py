@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -45,8 +46,16 @@ def transformed_points(hand, q):
 
 def hand_clearances(left_hand, left_q, right_q, right_hand=None):
     right_hand = right_hand or left_hand
-    left_outer, left_inner = controller(left_hand.robot_name, left_q)
-    right_outer, right_inner = controller(right_hand.robot_name, right_q)
+    left_outer, left_inner = controller(
+        left_hand.robot_name,
+        left_q,
+        hand=left_hand,
+    )
+    right_outer, right_inner = controller(
+        right_hand.robot_name,
+        right_q,
+        hand=right_hand,
+    )
     rows = []
     for index in range(len(left_q)):
         outer_distance = torch.cdist(
@@ -149,6 +158,30 @@ def run_isaac(args, object_name, left_q, right_q, object_dir):
         command.append("--support-during-closure")
     if getattr(args, "fixture_during_closure", False):
         command.append("--fixture-during-closure")
+    if getattr(args, "capture_contacts", False):
+        command.append("--capture-contacts")
+    if getattr(args, "object_vhacd", False):
+        command.extend(
+            [
+                "--object-vhacd",
+                "--object-vhacd-resolution",
+                str(getattr(args, "object_vhacd_resolution", 300000)),
+                "--object-vhacd-max-convex-hulls",
+                str(
+                    getattr(
+                        args, "object_vhacd_max_convex_hulls", 64
+                    )
+                ),
+                "--object-vhacd-max-vertices",
+                str(getattr(args, "object_vhacd_max_vertices", 64)),
+            ]
+        )
+    if getattr(args, "object_multicollision", False):
+        command.append("--object-multicollision")
+    if getattr(args, "object_vhacd_high_v1", False):
+        command.append("--object-vhacd-high-v1")
+    if getattr(args, "object_vhacd_visual_high_v2", False):
+        command.append("--object-vhacd-visual-high-v2")
     environment = os.environ.copy()
     environment["PATH"] = (
         str(args.isaac_python.parent)
@@ -164,6 +197,7 @@ def run_isaac(args, object_name, left_q, right_q, object_dir):
     if nvidia_icd.is_file():
         environment["VK_ICD_FILENAMES"] = str(nvidia_icd)
     with (object_dir / "isaac.log").open("w") as log:
+        print("COMMAND:", shlex.join(command), file=log, flush=True)
         subprocess.run(
             command,
             cwd=args.repo,

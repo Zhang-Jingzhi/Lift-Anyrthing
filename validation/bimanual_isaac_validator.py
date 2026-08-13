@@ -41,6 +41,11 @@ class BimanualIsaacValidator:
         max_gravity_displacement=0.02,
         max_direction_displacement=0.02,
         object_density=500.0,
+        object_vhacd=False,
+        object_vhacd_resolution=300000,
+        object_vhacd_max_convex_hulls=64,
+        object_vhacd_max_vertices=64,
+        capture_contacts=False,
         steps_per_sec=100,
         grasp_step=100,
         debug_interval=0.01,
@@ -83,6 +88,13 @@ class BimanualIsaacValidator:
         self.max_gravity_displacement = float(max_gravity_displacement)
         self.max_direction_displacement = float(max_direction_displacement)
         self.object_density = float(object_density)
+        self.object_vhacd = bool(object_vhacd)
+        self.object_vhacd_resolution = int(object_vhacd_resolution)
+        self.object_vhacd_max_convex_hulls = int(
+            object_vhacd_max_convex_hulls
+        )
+        self.object_vhacd_max_vertices = int(object_vhacd_max_vertices)
+        self.capture_contacts = bool(capture_contacts)
         self.steps_per_sec = steps_per_sec
         self.grasp_step = grasp_step
         self.debug_interval = debug_interval
@@ -115,9 +127,16 @@ class BimanualIsaacValidator:
         params.physx.num_velocity_iterations = 0
         params.physx.contact_offset = self.contact_offset
         params.physx.rest_offset = 0.0
+        # CUDA_VISIBLE_DEVICES remaps the PhysX compute ordinal, but Isaac
+        # Gym's graphics ordinal is a physical-device index.  Reusing
+        # ``self.gpu`` in headless multi-GPU jobs therefore opened an extra
+        # graphics context on physical GPU 0 for every worker.  Headless
+        # validation does not render, so disable the graphics device entirely
+        # and keep the selected logical CUDA device only for PhysX compute.
+        graphics_device = self.gpu if use_gui else -1
         self.sim = self.gym.create_sim(
             self.gpu,
-            self.gpu,
+            graphics_device,
             gymapi.SIM_PHYSX,
             params,
         )
@@ -148,6 +167,21 @@ class BimanualIsaacValidator:
         self.object_options.override_com = True
         self.object_options.override_inertia = True
         self.object_options.density = self.object_density
+        # The runtime object URDF references a CoACD all-in-one OBJ.  Without
+        # decomposition Isaac turns the entire non-convex mesh into one convex
+        # hull, which creates false contacts across handles/wings and inflates
+        # mass.  Keep this opt-in so legacy results remain reproducible.
+        if self.object_vhacd:
+            self.object_options.vhacd_enabled = True
+            self.object_options.vhacd_params.resolution = (
+                self.object_vhacd_resolution
+            )
+            self.object_options.vhacd_params.max_convex_hulls = (
+                self.object_vhacd_max_convex_hulls
+            )
+            self.object_options.vhacd_params.max_num_vertices_per_ch = (
+                self.object_vhacd_max_vertices
+            )
 
         self.support_options = gymapi.AssetOptions()
         self.support_options.fix_base_link = True
@@ -534,6 +568,116 @@ class BimanualIsaacValidator:
             actor_root_tensor,
         )
 
+    @staticmethod
+    def _contact_vec3(value):
+        """Convert either a RigidContact Vec3 record or object to floats."""
+        try:
+            return [float(value[name]) for name in ("x", "y", "z")]
+        except (IndexError, KeyError, TypeError, ValueError):
+            return [float(value.x), float(value.y), float(value.z)]
+
+    @staticmethod
+    def _contact_field(contact, *names):
+        available = contact.dtype.names or ()
+        for name in names:
+            if name in available:
+                return contact[name]
+        raise KeyError(
+            f"RigidContact fields {names} are unavailable; got {available}"
+        )
+
+    def _capture_object_hand_contacts(self, rigid_state):
+        """Record all PhysX object/hand contacts in every environment."""
+        snapshots = []
+        for env_index, env in enumerate(self.envs):
+            body_map = {}
+            actors = (
+                ("object", self.object_handles[env_index]),
+                ("left", self.left_handles[env_index]),
+                ("right", self.right_handles[env_index]),
+            )
+            for actor_name, handle in actors:
+                names = self.gym.get_actor_rigid_body_names(env, handle)
+                for local_index, body_name in enumerate(names):
+                    body_index = self.gym.get_actor_rigid_body_index(
+                        env,
+                        handle,
+                        local_index,
+                        gymapi.DOMAIN_ENV,
+                    )
+                    body_map[int(body_index)] = (actor_name, body_name)
+
+            rows = []
+            contacts = self.gym.get_env_rigid_contacts(env)
+            for contact_index, contact in enumerate(contacts):
+                body0 = int(contact["body0"])
+                body1 = int(contact["body1"])
+                actor0, name0 = body_map.get(body0, ("other", str(body0)))
+                actor1, name1 = body_map.get(body1, ("other", str(body1)))
+                actors_in_contact = {actor0, actor1}
+                if "object" not in actors_in_contact or not (
+                    {"left", "right"} & actors_in_contact
+                ):
+                    continue
+
+                local0 = np.asarray(
+                    self._contact_vec3(
+                        self._contact_field(
+                            contact, "local_pos0", "localPos0"
+                        )
+                    ),
+                    dtype=np.float64,
+                )
+                local1 = np.asarray(
+                    self._contact_vec3(
+                        self._contact_field(
+                            contact, "local_pos1", "localPos1"
+                        )
+                    ),
+                    dtype=np.float64,
+                )
+
+                def world_point(body_index, local_point):
+                    state = rigid_state[env_index, body_index].cpu().numpy()
+                    return (
+                        Rotation.from_quat(state[3:7]).apply(local_point)
+                        + state[:3]
+                    )
+
+                world0 = world_point(body0, local0)
+                world1 = world_point(body1, local1)
+                rows.append(
+                    {
+                        "contact_index": contact_index,
+                        "body0_index": body0,
+                        "body1_index": body1,
+                        "actor0": actor0,
+                        "actor1": actor1,
+                        "body0_name": name0,
+                        "body1_name": name1,
+                        "local_pos0_m": local0.tolist(),
+                        "local_pos1_m": local1.tolist(),
+                        "world_pos0_m": world0.tolist(),
+                        "world_pos1_m": world1.tolist(),
+                        "world_midpoint_m": ((world0 + world1) * 0.5).tolist(),
+                        "normal": self._contact_vec3(contact["normal"]),
+                        "initial_overlap_m": float(
+                            self._contact_field(
+                                contact, "initial_overlap", "initialOverlap"
+                            )
+                        ),
+                        "min_dist_m": float(
+                            self._contact_field(
+                                contact, "min_dist", "minDist"
+                            )
+                        ),
+                        "normal_impulse": float(contact["lambda"]),
+                        "friction": float(contact["friction"]),
+                    }
+                )
+            snapshots.append(rows)
+        return snapshots
+
     def run_sim(self, gravity_only=False):
         self._simulate(
             self.grasp_step,
@@ -555,6 +699,9 @@ class BimanualIsaacValidator:
         dof_state = gymtorch.wrap_tensor(dof_tensor)
         closure_pos = rigid_state[:, 0, :3].clone()
         settle_displacement = closure_pos.norm(dim=-1)
+        closure_contacts = None
+        if self.capture_contacts:
+            closure_contacts = self._capture_object_hand_contacts(rigid_state)
 
         if self.lift_height > 0.0:
             self._execute_lift()
@@ -565,6 +712,9 @@ class BimanualIsaacValidator:
             self._remove_support(actor_root_state, actor_root_tensor)
         lifted_pos = rigid_state[:, 0, :3].clone()
         lift_displacement_z = lifted_pos[:, 2] - closure_pos[:, 2]
+        lifted_contacts = None
+        if self.capture_contacts:
+            lifted_contacts = self._capture_object_hand_contacts(rigid_state)
 
         if self.gravity > 0.0:
             if self.staged_gravity:
@@ -575,6 +725,9 @@ class BimanualIsaacValidator:
             self.gym.refresh_dof_state_tensor(self.sim)
         settled_pos = rigid_state[:, 0, :3].clone()
         gravity_displacement = (settled_pos - lifted_pos).norm(dim=-1)
+        settled_contacts = None
+        if self.capture_contacts:
+            settled_contacts = self._capture_object_hand_contacts(rigid_state)
         left_q_final, right_q_final = (
             self._settled_hands_in_object_frame(rigid_state)
         )
@@ -661,7 +814,7 @@ class BimanualIsaacValidator:
         success = gravity_success & (
             max_direction_displacement <= self.max_direction_displacement
         )
-        return {
+        result = {
             "success": success.cpu(),
             "gravity_success": gravity_success.cpu(),
             "settle_displacement": settle_displacement.cpu(),
@@ -679,6 +832,15 @@ class BimanualIsaacValidator:
                 float(self.object_force / 0.5),
             ),
         }
+        if self.capture_contacts:
+            result.update(
+                {
+                    "closure_contacts": closure_contacts,
+                    "lifted_contacts": lifted_contacts,
+                    "settled_contacts": settled_contacts,
+                }
+            )
+        return result
 
     def destroy(self):
         for env in self.envs:

@@ -11,6 +11,11 @@ if [[ ! -d "$target_root/data_urdf/robot/allegro" ]]; then
 fi
 
 mkdir -p "$target_root"
-cp -a "$source_root/." "$target_root/"
+# The repository may live on NFS with root-squash or mapped ownership.  In
+# that case `cp -a` copies the bytes but fails while preserving metadata,
+# causing a false installation failure.  These runtime files do not require
+# source ownership, modes, or timestamps; copy only the directory contents.
+cp -R --no-preserve=mode,ownership,timestamps \
+  "$source_root/." "$target_root/"
 
 echo "Installed the tracked left/right Allegro and xlarge-object overlay."

@@ -49,10 +49,15 @@ def get_link_dir(robot_name, joint_name):
     return link_dir
 
 
-def controller(robot_name, q_para):
+def controller(robot_name, q_para, hand=None):
     q_batch = torch.atleast_2d(q_para)
 
-    hand = create_hand_model(robot_name, device=q_batch.device)
+    if hand is None:
+        hand = create_hand_model(robot_name, device=q_batch.device)
+    elif hand.robot_name != robot_name:
+        raise ValueError(
+            f"Cached hand model is {hand.robot_name!r}, expected {robot_name!r}"
+        )
     joint_orders = hand.get_joint_orders()
     pk_chain = hand.pk_chain
     if q_batch.shape[-1] != len(pk_chain.get_joint_parameter_names()):
