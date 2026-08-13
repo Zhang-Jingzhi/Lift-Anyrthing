@@ -6,6 +6,7 @@ not modify any dataset or source mesh.
 """
 from pathlib import Path
 import math
+import os
 
 import numpy as np
 import torch
@@ -15,9 +16,9 @@ import pyrender
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
-URDF_PATH = ROOT / "migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1.urdf"
-DATA_DIR = ROOT / "migration_4090/results/xhand_fullbody_grasps_v1_final"
-OUT_DIR = ROOT / "migration_4090/renders/xhand_fullbody_final_v1"
+URDF_PATH = Path(os.environ.get("XHAND_FULLBODY_URDF", ROOT / "migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1.urdf"))
+DATA_DIR = Path(os.environ.get("XHAND_FINAL_DATA_DIR", ROOT / "migration_4090/results/xhand_fullbody_grasps_v1_final"))
+OUT_DIR = Path(os.environ.get("XHAND_RENDER_OUT", ROOT / "migration_4090/renders/xhand_fullbody_final_v1"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OBJECTS = (

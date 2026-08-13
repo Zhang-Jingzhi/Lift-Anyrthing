@@ -15,8 +15,8 @@ import jax.numpy as jnp, jaxlie, jaxls, pyroki as pk
 ROOT=Path(__file__).resolve().parents[1]; sys.path.insert(0,str(ROOT))
 from utils.pyroki_ik import PyrokiRetarget
 
-IK_URDF=Path(os.environ.get('XHAND_FULLBODY_IK_URDF','/media/home/st/curobo_robot_assets/tianji_xhand/migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf'))
-ASSET_ROOT=ROOT/'external_assets/objectflow_20260812/ObjectFlow_3D_sim_assets_20260812'
+IK_URDF=Path(os.environ.get('XHAND_FULLBODY_IK_URDF', ROOT/'migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf'))
+ASSET_ROOT=Path(os.environ.get('OBJECTFLOW_ASSET_ROOT', ROOT/'external_assets/objectflow_20260812/ObjectFlow_3D_sim_assets_20260812'))
 
 def rot_from_inward(inward, palm_tilt_deg=20.0, side='left', x_bias=-0.08):
     """Build a TCP frame matching the validated XHand convention.

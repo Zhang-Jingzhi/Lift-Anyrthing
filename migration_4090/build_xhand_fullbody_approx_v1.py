@@ -11,14 +11,15 @@ import argparse
 import copy
 import json
 import math
+import os
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OLD_URDF = Path("/media/home/tiechenrui/linkhou_urdf_0618/urdf/linkhou_urdf_0618.urdf")
-HAND_ROOT = ROOT / "migration_4090/assets/xhand1_urdf_ver1.3/XHAND1_URDF_ver 1.3"
+OLD_URDF = Path(os.environ.get("TIANJI_BASE_URDF", "/media/home/tiechenrui/linkhou_urdf_0618/urdf/linkhou_urdf_0618.urdf"))
+HAND_ROOT = Path(os.environ.get("XHAND_PACKAGE_ROOT", ROOT / "migration_4090/assets/xhand1_urdf_ver1.3/XHAND1_URDF_ver 1.3"))
 OUT_DIR = ROOT / "migration_4090/assets/xhand_fullbody_approx_v1"
 OUT_URDF = OUT_DIR / "linkhou_xhand_fullbody_approx_v1.urdf"
 OUT_MANIFEST = OUT_DIR / "manifest.json"
@@ -27,7 +28,8 @@ OUT_MANIFEST = OUT_DIR / "manifest.json"
 def absolute_mesh_filename(filename: str, source_root: Path, original: bool) -> str:
     if filename.startswith("package://linkhou_urdf_0618/meshes/"):
         rel = filename.split("/meshes/", 1)[1]
-        return str(Path("/media/home/tiechenrui/linkhou_urdf_0618/meshes") / rel)
+        mesh_root = Path(os.environ.get("TIANJI_MESH_ROOT", OLD_URDF.parent.parent / "meshes"))
+        return str(mesh_root / rel)
     if filename.startswith("package://xhand_left/meshes/"):
         return str(HAND_ROOT / "xhand1_left/meshes" / filename.split("/meshes/", 1)[1])
     if filename.startswith("package://xhand_right/meshes/"):

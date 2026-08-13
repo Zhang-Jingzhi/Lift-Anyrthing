@@ -31,6 +31,31 @@ env/
 *.log
 res.txt
 
+# RTX 4090 migration experiment outputs (keep scripts/configs versioned)
+/migration_4090/.torch_extensions_*/
+/migration_4090/assets/
+/migration_4090/calibration/
+/migration_4090/derived/
+/migration_4090/handoffs/
+/migration_4090/large_random_v1_candidates/
+/migration_4090/min_validation_v2/
+/migration_4090/objectflow_pose_preview/*/*.pt
+/migration_4090/objectflow_pose_preview/*/*.json
+/migration_4090/objectflow_pose_preview/*/*.png
+/migration_4090/objectflow_pose_preview/*/*/*.pt
+/migration_4090/objectflow_pose_preview/*/*/*.json
+/migration_4090/objectflow_pose_preview/*/*/*.png
+/migration_4090/objectflow_pose_preview/*/
+/migration_4090/objectflow_four_success_v1/
+/migration_4090/renders/
+/migration_4090/reports/
+/migration_4090/results/
+/migration_4090/xhand_ik_smoke_v1/
+/migration_4090/xhand_six_object_smoke_v1/
+/migration_4090/xhand_six_object_smoke_v1_v3/
+/migration_4090/xhand_six_object_smoke_v4/
+/external_assets/
+
 # OS/editor files
 .DS_Store
 *~

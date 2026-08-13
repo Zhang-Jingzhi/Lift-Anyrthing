@@ -14,11 +14,12 @@ from yourdfpy import URDF
 
 from render_xhand_fullbody_final import look_at, scene_for_sample
 
+ROOT = Path(__file__).resolve().parents[1]
 
-URDF_PATH = Path(
-    "/media/home/st/curobo_robot_assets/tianji_xhand/migration_4090/assets/"
-    "xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf"
-)
+URDF_PATH = Path(os.environ.get(
+    "XHAND_FULLBODY_IK_URDF",
+    ROOT / "migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf",
+))
 
 
 def font(size):

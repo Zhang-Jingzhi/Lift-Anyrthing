@@ -24,8 +24,8 @@ from make_compact_xhand_upward_palm_candidates import set_hand_posture, target_r
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / "migration_4090/results/xhand_compact_6x8_v2/catalog.json"
-TEMPLATE = ROOT / "migration_4090/results/xhand_compact_sphere_290mm_x0p50_v1_upward_palm.pt"
+CATALOG = Path(os.environ.get("XHAND_COMPACT_CATALOG", ROOT / "migration_4090/results/xhand_compact_6x8_v2/catalog.json"))
+TEMPLATE = Path(os.environ.get("XHAND_COMPACT_TEMPLATE", ROOT / "migration_4090/results/xhand_compact_sphere_290mm_x0p50_v1_upward_palm.pt"))
 TEMPLATE_SAMPLE_INDEX = 7
 TARGET_LINKS = ("L_tcp", "R_tcp")
 
