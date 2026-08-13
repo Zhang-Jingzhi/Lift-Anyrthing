@@ -15,11 +15,17 @@ import jaxlie
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSET_ROOT = ROOT / "external_assets/objectflow_20260812/ObjectFlow_3D_sim_assets_20260812"
+ASSET_ROOT = Path(os.environ.get(
+    "OBJECTFLOW_ASSET_ROOT",
+    ROOT / "external_assets/objectflow_20260812/ObjectFlow_3D_sim_assets_20260812",
+))
 sys.path.insert(0, str(ROOT))
 from utils.pyroki_ik import PyrokiRetarget
 
-IK_URDF = Path(os.environ.get("XHAND_FULLBODY_IK_URDF", "/media/home/st/curobo_robot_assets/tianji_xhand/migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf"))
+IK_URDF = Path(os.environ.get(
+    "XHAND_FULLBODY_IK_URDF",
+    ROOT / "migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf",
+))
 
 
 def load_pose(path, index):

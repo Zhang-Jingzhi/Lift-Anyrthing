@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-REPO=/media/home/zhangjingzhi/TRO-Grasp-Reproduction
-ISAAC=/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/isaac/bin/python
-TRO=/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/tro/bin/python
-ROOT="$REPO/migration_4090/xhand_six_object_smoke_v4"
+REPO="${TRO_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ISAAC="${ISAAC_PYTHON:-$REPO/.tro_grasp_tools/miniforge3/envs/isaac/bin/python}"
+TRO="${TRO_PYTHON:-$REPO/.tro_grasp_tools/miniforge3/envs/tro/bin/python}"
+BANK_ROOT="${XHAND_BANK_ROOT:-$REPO/migration_4090/xhand_six_object_smoke_v1_v3/banks}"
+ROOT="${XHAND_SMOKE_ROOT:-$REPO/migration_4090/xhand_six_object_smoke_v4}"
 mkdir -p "$ROOT/reports" "$ROOT/logs" "$ROOT/materialized" "$ROOT/winners"
 
 objects=(sphere cube cracker bleach pitcher drill)
@@ -15,7 +16,7 @@ for obj in "${objects[@]}"; do
     gpu=$((job % 8)); job=$((job + 1))
     (
       export JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES=""
-      bank="$REPO/migration_4090/xhand_six_object_smoke_v1_v3/banks/${obj}_${method}.pt"
+      bank="$BANK_ROOT/${obj}_${method}.pt"
       winner="$ROOT/winners/${obj}_${method}.json"
       if [[ -s "$winner" ]]; then echo "WINNER_EXISTS $obj $method"; exit 0; fi
       for idx in $(seq 0 23); do
@@ -29,9 +30,9 @@ for obj in "${objects[@]}"; do
             --bank "$bank" --index "$idx" --asset-dir "$work/assets" --output "$dataset" > "$log" 2>&1 || continue
           density=$("$TRO" -c 'import sys,torch; print(torch.load(sys.argv[1],map_location="cpu",weights_only=False)["samples"][0]["physical_parameters"]["recommended_density_kg_m3"])' "$dataset")
           [[ -n "$density" ]] || continue
-          export PATH=/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/isaac/bin:/usr/bin:/bin
-          export LD_LIBRARY_PATH=/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/isaac/lib
-          export PYTHONPATH=/media/home/zhangjingzhi/.tro_grasp_tools/isaacgym-preview4/isaacgym/python
+          export PATH="$(dirname "$ISAAC"):/usr/bin:/bin:$PATH"
+          export LD_LIBRARY_PATH="${ISAAC_GYM_LIB:-$(dirname "$ISAAC")/../lib}"
+          export PYTHONPATH="${ISAAC_GYM_PYTHON:-${PYTHONPATH:-}}"
           export CUDA_VISIBLE_DEVICES=$gpu
           export XHAND_SIM_DT=0.002 XHAND_SIM_SUBSTEPS=4
           export XHAND_PHYSX_POS_ITERS=16 XHAND_PHYSX_VEL_ITERS=4
