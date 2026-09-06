@@ -1,0 +1,45 @@
+schema: xhand_bodex_bimanual_ik_seed_v1
+note: >-
+  Open-hand joint-bimanual IK warm start replayed from a pinned-BODex
+  coordinate seed. It is used only to initialize fresh paired-surface BODex
+  optimizations; no final grasp, reward, contact result, or accepted RL sample
+  is copied from the source diagnostic.
+joint_positions:
+  left_j1: -0.15899847447872162
+  left_j2: -1.2183244228363037
+  left_j3: 0.6493868231773376
+  left_j4: -1.0831235647201538
+  left_j5: -2.9868338108062744
+  left_j6: 0.8843917846679688
+  left_j7: 0.8110489249229431
+  right_j1: -0.40121975541114807
+  right_j2: -1.5433835983276367
+  right_j3: 1.3556421995162964
+  right_j4: -1.8047736883163452
+  right_j5: -2.7433066368103027
+  right_j6: -1.0287971496582031
+  right_j7: 0.48691266775131226
+  left_hand_index_bend_joint: 0.17083929479122162
+  left_hand_index_joint1: 0.08906108886003494
+  left_hand_index_joint2: 0.8809628486633301
+  left_hand_mid_joint1: 0.03633414953947067
+  left_hand_mid_joint2: 0.8772314786911011
+  left_hand_ring_joint1: 0.03613409027457237
+  left_hand_ring_joint2: 0.8754511475563049
+  left_hand_pinky_joint1: 0.002249885583296418
+  left_hand_pinky_joint2: 0.8793105483055115
+  left_hand_thumb_bend_joint: 0.001839970238506794
+  left_hand_thumb_rota_joint1: -0.6957525014877319
+  left_hand_thumb_rota_joint2: 0.9693402051925659
+  right_hand_index_bend_joint: 0.17162826657295227
+  right_hand_index_joint1: 0.00436119269579649
+  right_hand_index_joint2: 0.8905717134475708
+  right_hand_mid_joint1: 0.00440550409257412
+  right_hand_mid_joint2: 0.8686486482620239
+  right_hand_ring_joint1: 0.0019434608984738588
+  right_hand_ring_joint2: 0.8758407235145569
+  right_hand_pinky_joint1: 0.037370771169662476
+  right_hand_pinky_joint2: 0.865748405456543
+  right_hand_thumb_bend_joint: 0.0018449682975187898
+  right_hand_thumb_rota_joint1: -0.6956486701965332
+  right_hand_thumb_rota_joint2: 0.9625862836837769

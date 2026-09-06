@@ -11,6 +11,7 @@ import argparse
 import copy
 import json
 import math
+import sys
 import os
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
@@ -94,11 +95,43 @@ def fixed_joint(name: str, parent: str, child: str, xyz: str, rpy: str) -> ET.El
     return joint
 
 
+def check_mount_symmetry(right_rpy: str, left_rpy: str, *, allow_flipped: bool) -> None:
+    """Refuse to emit a right mount that disagrees with the left one.
+
+    Both XHand meshes are already mirrored, so equal mount rotations give two
+    palms that face each other.  A right mount half a turn away from the left is
+    exactly the defect that silently invalidated earlier grasp datasets, and it
+    is invisible in every downstream artifact except a rendered picture.
+    """
+    right = [float(v) for v in right_rpy.split()]
+    left = [float(v) for v in left_rpy.split()]
+    if all(abs(r - l) <= 1e-6 for r, l in zip(right, left)):
+        return
+    message = (
+        f"right mount rpy ({right_rpy}) does not match the left mount "
+        f"({left_rpy}); the right palm would face away from the object"
+    )
+    if not allow_flipped:
+        raise SystemExit(
+            f"refusing to write a flipped right mount: {message}. "
+            "Pass --allow-flipped-right-mount if this asymmetry is intended."
+        )
+    print(f"WARNING: {message}", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=OUT_DIR)
     parser.add_argument("--mount-mode", choices=("shape_aligned", "no_transform", "tcp_identity", "inward_v1", "inward_v2", "right_flip_v1"), default="shape_aligned")
+    parser.add_argument(
+        "--allow-flipped-right-mount",
+        action="store_true",
+        help=(
+            "permit a right mount rotation that differs from the left one; "
+            "only the historical inward_v1/inward_v2 hypotheses need this"
+        ),
+    )
     args = parser.parse_args()
     if not OLD_URDF.is_file():
         raise FileNotFoundError(OLD_URDF)
@@ -146,10 +179,16 @@ def main() -> None:
         right_xyz, right_rpy = f"0.1189997193922 {inward} -0.000151978290524586", right_rpy
         left_xyz, left_rpy = f"0.1189997193922 {-inward} 0.00015197829051407", "-1.57079632679491 0 -1.57079632679489"
     else:
-        right_xyz, right_rpy = "0.1189997193922 0 -0.000151978290524586", "1.57079632679489 0 1.5707963267949"
+        # Both XHand meshes are already mirrored, so the right mount must match
+        # the left one.  The old +pi/2,+pi/2 value put the right palm's dorsal
+        # side toward the object.
+        right_xyz, right_rpy = "0.1189997193922 0 -0.000151978290524586", "-1.57079632679491 0 -1.57079632679489"
         left_xyz, left_rpy = "0.1189997193922 0 0.00015197829051407", "-1.57079632679491 0 -1.57079632679489"
     right_parent = "R_tcp" if args.mount_mode == "tcp_identity" else "right_j7"
     left_parent = "L_tcp" if args.mount_mode == "tcp_identity" else "left_j7"
+    check_mount_symmetry(
+        right_rpy, left_rpy, allow_flipped=args.allow_flipped_right_mount
+    )
     robot.append(fixed_joint(
         "right_hand_mount_xhand_v1", right_parent, "right_hand_link",
         right_xyz, right_rpy,
@@ -176,7 +215,7 @@ def main() -> None:
         "output_urdf": str(out_urdf),
         "mount_mode": args.mount_mode,
         "mounts": {
-            "right": {"parent": right_parent, "child": "right_hand_link", "xyz": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else ([0.1189997193922, 0.025 if args.mount_mode in ("inward_v1", "right_flip_v1") else 0.080, -0.000151978290524586] if args.mount_mode in ("inward_v1", "inward_v2", "right_flip_v1") else [0.1189997193922, 0.0, -0.000151978290524586]), "rpy": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else ([-math.pi / 2, 0.0, -math.pi / 2] if args.mount_mode == "right_flip_v1" else [math.pi / 2, 0.0, math.pi / 2])},
+            "right": {"parent": right_parent, "child": "right_hand_link", "xyz": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else ([0.1189997193922, 0.025 if args.mount_mode in ("inward_v1", "right_flip_v1") else 0.080, -0.000151978290524586] if args.mount_mode in ("inward_v1", "inward_v2", "right_flip_v1") else [0.1189997193922, 0.0, -0.000151978290524586]), "rpy": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else ([math.pi / 2, 0.0, math.pi / 2] if args.mount_mode in ("inward_v1", "inward_v2") else [-math.pi / 2, 0.0, -math.pi / 2])},
             "left": {"parent": left_parent, "child": "left_hand_link", "xyz": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else ([0.1189997193922, -0.025 if args.mount_mode == "inward_v1" else -0.080, 0.00015197829051407] if args.mount_mode in ("inward_v1", "inward_v2") else [0.1189997193922, 0.0, 0.00015197829051407]), "rpy": [0.0, 0.0, 0.0] if args.mount_mode in ("no_transform", "tcp_identity") else [-math.pi / 2, 0.0, -math.pi / 2]},
         },
         "tcp_aliases": {"L_tcp": "left_hand_ee_link", "R_tcp": "right_hand_ee_link"},

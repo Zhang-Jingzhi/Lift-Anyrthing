@@ -1,0 +1,45 @@
+schema: xhand_bodex_bimanual_ik_seed_v1
+note: >-
+  Fixed-base bimanual ready posture used solely to initialize collision-aware
+  cuRobo IK. Arm reachability was calibrated from an Isaac-validated example;
+  the fingers use one symmetric generic open pregrasp. No grasp result,
+  contact, reward, or accepted sample is copied into BODex output.
+joint_positions:
+  left_j1: -0.47724780440330505
+  left_j2: -1.2889412641525269
+  left_j3: 1.2505571842193604
+  left_j4: -1.2043187618255615
+  left_j5: -3.011042833328247
+  left_j6: 0.8809639811515808
+  left_j7: 0.4175541400909424
+  right_j1: -0.44240912795066833
+  right_j2: -1.5433988571166992
+  right_j3: 1.3667179346084595
+  right_j4: -1.8076515197753906
+  right_j5: -3.1100001335144043
+  right_j6: -1.0500000715255737
+  right_j7: 0.1513889580965042
+  left_hand_thumb_bend_joint: 1.0
+  left_hand_thumb_rota_joint1: -0.3
+  left_hand_thumb_rota_joint2: 1.2
+  left_hand_index_bend_joint: 0.1
+  left_hand_index_joint1: 0.9
+  left_hand_index_joint2: 1.1
+  left_hand_mid_joint1: 0.9
+  left_hand_mid_joint2: 1.1
+  left_hand_ring_joint1: 0.9
+  left_hand_ring_joint2: 1.1
+  left_hand_pinky_joint1: 0.9
+  left_hand_pinky_joint2: 1.1
+  right_hand_thumb_bend_joint: 1.0
+  right_hand_thumb_rota_joint1: -0.3
+  right_hand_thumb_rota_joint2: 1.2
+  right_hand_index_bend_joint: 0.1
+  right_hand_index_joint1: 0.9
+  right_hand_index_joint2: 1.1
+  right_hand_mid_joint1: 0.9
+  right_hand_mid_joint2: 1.1
+  right_hand_ring_joint1: 0.9
+  right_hand_ring_joint2: 1.1
+  right_hand_pinky_joint1: 0.9
+  right_hand_pinky_joint2: 1.1

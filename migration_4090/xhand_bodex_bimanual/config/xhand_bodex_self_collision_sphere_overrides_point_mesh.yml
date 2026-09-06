@@ -1,0 +1,42 @@
+schema: xhand_bodex_self_collision_sphere_overrides_v1
+robot_config_sha256: 6c86eabff9fccc306f52b8ac8445a4790c99bc1a2d462ad12bab3058dd05c917
+link_overrides:
+  - first_link: left_j5
+    second_link: left_j7
+    reason: sparse fitted spheres repeatedly overlap across the two-hop wrist assembly while the real meshes retain clearance
+    mesh_validation:
+      surface_intersection: false
+      minimum_clearance_m: 0.002848767381242616
+      method: 100000 deterministic surface samples, exact point-to-triangle refinement of the 500 nearest samples, and bidirectional unique-edge segment intersection
+      first_unique_edges_checked: 8718
+      second_unique_edges_checked: 23200
+      segment_intersection_count: 0
+overrides:
+  - first:
+      link: right_hand_link
+      sphere_index: 2
+    second:
+      link: right_hand_thumb_rota_link1
+      sphere_index: 2
+    reason: fitted collision spheres overlap at an intended thumb-base clearance
+    collision_sphere_penetration_m: 0.0015955409035086632
+    mesh_validation:
+      surface_intersection: false
+      minimum_clearance_m: 0.0024191820234728653
+      method: 100000 deterministic surface samples, exact point-to-triangle refinement of the 500 nearest samples, and bidirectional unique-edge segment intersection
+      first_unique_edges_checked: 26343
+      second_unique_edges_checked: 14911
+      segment_intersection_count: 0
+  - first:
+      link: right_hand_index_rota_link1
+      sphere_index: 2
+    second:
+      link: right_hand_mid_link2
+      sphere_index: 1
+    reason: fitted neighboring-finger spheres overlap while transformed real meshes have a strict separating axis
+    collision_sphere_penetration_m: 0.0011027827858924866
+    mesh_validation:
+      surface_intersection: false
+      minimum_clearance_m: 0.0001747325283253387
+      method: strict separating-axis lower bound from transformed STL axis-aligned bounds
+      separating_world_axis: z
