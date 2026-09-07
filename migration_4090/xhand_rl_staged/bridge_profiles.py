@@ -735,6 +735,68 @@ BRIDGE_PROFILES = {
             episode_length_s=8.0,
             penetration_limit_m=0.003,
         ),
+        replace(
+            _profile(
+                "stable_35mm_lownoise_v1",
+                target_height_m=0.035,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="lift",
+            ),
+            reset_xy_noise_m=0.0010,
+            reset_yaw_noise_rad=0.015,
+            reset_joint_noise_rad=0.0015,
+            penetration_limit_m=0.003,
+        ),
+        replace(
+            _profile(
+                "stable_35mm_slowapproach_v1",
+                target_height_m=0.035,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="lift",
+            ),
+            # Paired with a retracted start, the approach has to cover ~90 mm.
+            # At the usual 0.15 fraction of a 3.2 s episode that is ~190 mm/s and
+            # the hands drive into the object instead of onto it: measured
+            # 2026-09-07, retracting alone cut approach disturbance 23.8 -> 3.8 mm
+            # but tripled contact penetration to 10.3 mm.  Here the approach gets
+            # 3.2 s, about 28 mm/s.
+            episode_length_s=8.0,
+            phase_fractions=(0.40, 0.25, 0.20, 0.15),
+            penetration_limit_m=0.003,
+        ),
+        replace(
+            _profile(
+                "stable_35mm_free_v1",
+                target_height_m=0.035,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="close",
+            ),
+            # The tight residual is the suspected cap: at 0.02 rad, active only
+            # from the lift phase, the policy cannot touch the approach and
+            # close phases where the object is already knocked to 0.9 m/s.
+            # bridge_env only allows the "hands" action group, so the arms stay
+            # controller-driven either way -- this widens what little the policy
+            # does control.
+            residual_limit_rad=0.15,
+            residual_integration=0.010,
+            penetration_limit_m=0.003,
+        ),
+        replace(
+            _profile(
+                "stable_35mm_nonoise_v1",
+                target_height_m=0.035,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="lift",
+            ),
+            reset_xy_noise_m=0.0,
+            reset_yaw_noise_rad=0.0,
+            reset_joint_noise_rad=0.0,
+            penetration_limit_m=0.003,
+        ),
     )
 }
 

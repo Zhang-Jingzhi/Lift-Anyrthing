@@ -29,12 +29,20 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         lift_targets: Path,
         source_bodex_bank: Path,
         profile: LiftBridgeProfile,
+        retracted_pregrasp: Path | None = None,
+        retract_distance_m: float = 0.10,
         **kwargs: Any,
     ):
         self.bridge_profile = profile
         self.bridge_lift_targets_path = Path(lift_targets)
         self.bridge_source_bodex_bank = Path(source_bodex_bank)
+        self.bridge_retracted_pregrasp_path = (
+            Path(retracted_pregrasp) if retracted_pregrasp else None
+        )
+        self.bridge_retract_distance_m = float(retract_distance_m)
+        self.bridge_retracted_pregrasp = None
         super().__init__(cfg, **kwargs)
+        self._load_retracted_pregrasp()
         payload = torch.load(
             self.bridge_lift_targets_path,
             map_location="cpu",
@@ -114,6 +122,66 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         )
         self._reset_idx(self.robot._ALL_INDICES)
 
+    def _load_retracted_pregrasp(self) -> None:
+        """Load the per-candidate retracted start pose, if one was supplied."""
+        if self.bridge_retracted_pregrasp_path is None:
+            return
+        payload = torch.load(
+            self.bridge_retracted_pregrasp_path, map_location="cpu", weights_only=False
+        )
+        if payload.get("schema") != "xhand_bodex_retracted_pregrasp_v1":
+            raise RuntimeError("wrong retracted pregrasp schema")
+        if payload.get("source_bodex_bank_sha256") != sha256_file(
+            self.bridge_source_bodex_bank
+        ):
+            raise RuntimeError("retracted pregrasp was built from a different bank")
+        key = f"{self.bridge_retract_distance_m:.6f}"
+        table = payload["retracted_pregrasp_full_body_q"]
+        if key not in table:
+            raise RuntimeError(
+                f"retract distance {key} not in {sorted(table)}"
+            )
+        source_names = list(payload["joint_names"])
+        rows = table[key].tolist()
+        index_of = {name: i for i, name in enumerate(source_names)}
+        missing = [n for n in self.joint_names if n not in index_of]
+        if missing:
+            raise RuntimeError(f"retracted pregrasp lacks joints: {missing}")
+        self.bridge_retracted_pregrasp = torch.tensor(
+            [[row[index_of[name]] for name in self.joint_names] for row in rows],
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+    def _retracted_start(self, env_ids: torch.Tensor) -> torch.Tensor | None:
+        if self.bridge_retracted_pregrasp is None:
+            return None
+        return self.bridge_retracted_pregrasp[self.active_bank_index[env_ids]]
+
+    def _base_target(self, code: torch.Tensor) -> torch.Tensor:
+        """Interpolate the retracted start into the pregrasp during approach.
+
+        The parent clamps its close factor to zero before PHASE_CLOSE, which
+        makes the approach phase a constant hold.  Here the same phase carries
+        the robot from the retracted pose to the BODex pregrasp; every later
+        phase is left to the parent untouched.
+        """
+        target = super()._base_target(code)
+        if self.bridge_retracted_pregrasp is None:
+            return target
+        approach = code == PHASE_APPROACH
+        if not bool(approach.any()):
+            return target
+        start, _, _, _, _, _ = self.phase_boundaries
+        alpha = (
+            (self.episode_length_buf.float() / max(float(start), 1.0))
+            .clamp(0.0, 1.0)
+            .unsqueeze(-1)
+        )
+        retracted = self.bridge_retracted_pregrasp[self.active_bank_index]
+        blended = retracted + alpha * (self.nominal_pregrasp - retracted)
+        return torch.where(approach.unsqueeze(-1), blended, target)
+
     def _residual_contact_gate(self) -> torch.Tensor:
         """Return the per-environment gate for contact-conditioned residuals.
 
@@ -158,6 +226,19 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        start = self._retracted_start(env_ids)
+        if start is not None:
+            # The parent already wrote nominal_pregrasp and its reset noise;
+            # carry that same perturbation over so the retracted start keeps the
+            # episode-to-episode variation rather than removing it.
+            offset = self.robot.data.joint_pos[env_ids] - self.nominal_pregrasp[env_ids]
+            q = start + offset
+            limits = self.robot.data.soft_joint_pos_limits[env_ids]
+            q = torch.clamp(q, limits[..., 0], limits[..., 1])
+            self.robot.write_joint_state_to_sim(
+                q, torch.zeros_like(q), env_ids=env_ids
+            )
+            self.robot.set_joint_position_target(q, env_ids=env_ids)
         self.bridge_current_stable_steps[env_ids] = 0
         self.bridge_maximum_stable_steps[env_ids] = 0
         self.bridge_physically_bounded[env_ids] = True

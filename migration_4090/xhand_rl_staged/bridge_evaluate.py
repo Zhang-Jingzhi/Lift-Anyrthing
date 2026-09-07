@@ -24,6 +24,15 @@ parser.add_argument("--manifest", type=Path, required=True)
 parser.add_argument("--object", required=True)
 parser.add_argument("--bodex-bank", type=Path, required=True)
 parser.add_argument("--lift-targets", type=Path, required=True)
+parser.add_argument(
+    "--retracted-pregrasp",
+    type=Path,
+    help=(
+        "per-candidate retracted start pose; without it the approach phase "
+        "holds the pregrasp pose and the hands start 1-7 mm off the object"
+    ),
+)
+parser.add_argument("--retract-distance-m", type=float, default=0.10)
 parser.add_argument("--profile", required=True)
 parser.add_argument("--checkpoint", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
@@ -168,6 +177,8 @@ def main() -> None:
     env = EvaluationEnv(
         cfg,
         lift_targets=args.lift_targets,
+        retracted_pregrasp=args.retracted_pregrasp,
+        retract_distance_m=args.retract_distance_m,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
     )

@@ -18,6 +18,15 @@ parser.add_argument("--manifest", type=Path, required=True)
 parser.add_argument("--object", required=True)
 parser.add_argument("--bodex-bank", type=Path, required=True)
 parser.add_argument("--lift-targets", type=Path, required=True)
+parser.add_argument(
+    "--retracted-pregrasp",
+    type=Path,
+    help=(
+        "per-candidate retracted start pose; without it the approach phase "
+        "holds the pregrasp pose and the hands start 1-7 mm off the object"
+    ),
+)
+parser.add_argument("--retract-distance-m", type=float, default=0.10)
 parser.add_argument("--profile", required=True)
 parser.add_argument("--checkpoint", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
@@ -59,6 +68,21 @@ parser.add_argument(
         "resume checkpoint; requires a fresh optimizer state"
     ),
 )
+# The lift bridge builds its environment with stage_id=2 (contact_continuity),
+# whose reward profile leaves lift_height, stable_lift and force_closure at 0.0 --
+# only stages 4-6 turn them on (reward_profiles.py:102) -- and the overrides below
+# also zeroed terminal_success.  Measured 2026-09-07 across two training lines and
+# 340 iterations, those four tensorboard series are identically 0.000: nothing in
+# the objective ever paid for lifting.  The policy could only earn contact-shaping
+# reward, whose cheapest source is squeezing harder, and every resulting checkpoint
+# lost to a zero action vector on stable_terminal_state and sustained_micro_lift.
+#
+# These expose the weights instead of hardcoding them.  Defaults match stage 4/5 so
+# the bridge actually optimises the thing it is evaluated on; pass 0.0 to reproduce
+# the historical runs.
+parser.add_argument("--lift-height-reward-weight", type=float, default=14.0)
+parser.add_argument("--stable-lift-reward-weight", type=float, default=8.0)
+parser.add_argument("--terminal-success-weight", type=float, default=30.0)
 parser.add_argument("--kit-portable-root", type=Path)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -160,7 +184,9 @@ def main() -> None:
         terminal_contact_progress_mode="joint_gate",
         distributed_reward_requires_current_bilateral_contact=True,
         reward_overrides={
-            "terminal_success_weight": 0.0,
+            "lift_height_reward_weight": float(args.lift_height_reward_weight),
+            "stable_lift_reward_weight": float(args.stable_lift_reward_weight),
+            "terminal_success_weight": float(args.terminal_success_weight),
             "stage_gate_progress_reward_weight": 20.0,
             "stage_action_anchor_penalty_weight": 1.0,
             "stage_residual_anchor_penalty_weight": 8.0,
@@ -217,6 +243,8 @@ def main() -> None:
     env = XHandLiftBridgeEnv(
         cfg,
         lift_targets=args.lift_targets,
+        retracted_pregrasp=args.retracted_pregrasp,
+        retract_distance_m=args.retract_distance_m,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
     )
@@ -354,6 +382,9 @@ def main() -> None:
         "device": cfg.sim.device,
         "learning_rate": args.learning_rate,
         "entropy_coef": args.entropy_coef,
+        "lift_height_reward_weight": float(cfg.lift_height_reward_weight),
+        "stable_lift_reward_weight": float(cfg.stable_lift_reward_weight),
+        "terminal_success_weight": float(cfg.terminal_success_weight),
         "init_noise_std": args.init_noise_std,
         "candidate_selection": effective_candidate_selection,
         "candidate_repeat_factors": list(candidate_repeat_factors),

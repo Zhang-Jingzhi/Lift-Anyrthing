@@ -720,6 +720,10 @@ def test_lift_bridge_profiles_tighten_height_before_stability() -> None:
         "stable_5mm_contact_gated_hold_freeze_v1",
         "stable_35mm_v1",
         "stable_35mm_slow_v1",
+        "stable_35mm_lownoise_v1",
+        "stable_35mm_nonoise_v1",
+        "stable_35mm_free_v1",
+        "stable_35mm_slowapproach_v1",
     }
     controlled_5 = get_bridge_profile("controlled_5mm_v1")
     controlled_5_v2 = get_bridge_profile("controlled_5mm_v2")
