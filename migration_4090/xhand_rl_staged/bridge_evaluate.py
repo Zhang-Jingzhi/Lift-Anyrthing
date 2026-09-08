@@ -48,6 +48,19 @@ parser.add_argument(
     "--zero-action-candidates",
     help="comma-separated candidate indices whose RL residual is suppressed",
 )
+# Arm and hand position-control gains.  Ours are 1500/120 and 50/2; the
+# neighbouring skrl task drives the same robot at 800/60 and 30/2.  A stiffer
+# arm drives through an obstacle rather than yielding, which matches the
+# measured asymmetry: 3 mm of hand-object penetration when the ball is knocked
+# clear before closure, 10-12 mm when a retracted start leaves it in place.
+# Defaults keep the historical values, so passing nothing changes nothing.
+parser.add_argument("--finger-close-scale", type=float, default=1.0)
+parser.add_argument("--no-self-collisions", action="store_true")
+parser.add_argument("--object-max-depenetration-velocity", type=float, default=None)
+parser.add_argument("--arm-stiffness", type=float, default=None)
+parser.add_argument("--arm-damping", type=float, default=None)
+parser.add_argument("--hand-stiffness", type=float, default=None)
+parser.add_argument("--hand-damping", type=float, default=None)
 parser.add_argument("--kit-portable-root", type=Path)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -64,7 +77,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 from migration_4090.xhand_bodex_bimanual.contracts import sha256_file
 from migration_4090.xhand_rl_embedded.contracts import validate_manifest
-from migration_4090.xhand_rl_embedded.env import PHASE_CLOSE, PHASE_HOLD, PHASE_LIFT
+from migration_4090.xhand_rl_embedded.env import PHASE_APPROACH, PHASE_CLOSE, PHASE_HOLD, PHASE_LIFT
 
 from .bridge_env import XHandLiftBridgeEnv
 from .bridge_profiles import get_bridge_profile
@@ -139,6 +152,17 @@ def main() -> None:
         terminal_contact_progress_mode="joint_gate",
         distributed_reward_requires_current_bilateral_contact=True,
     )
+    for _field, _value in (
+        ("robot_self_collisions", False if args.no_self_collisions else None),
+        ("object_max_depenetration_velocity",
+         args.object_max_depenetration_velocity),
+        ("arm_stiffness", args.arm_stiffness),
+        ("arm_damping", args.arm_damping),
+        ("hand_stiffness", args.hand_stiffness),
+        ("hand_damping", args.hand_damping),
+    ):
+        if _value is not None:
+            setattr(cfg, _field, float(_value))
     cfg.episode_length_s = profile.episode_length_s
     (
         cfg.approach_fraction,
@@ -147,7 +171,9 @@ def main() -> None:
         cfg.hold_fraction,
     ) = profile.phase_fractions
     cfg.residual_activation_phase = (
-        PHASE_CLOSE
+        PHASE_APPROACH
+        if profile.residual_activation == "approach"
+        else PHASE_CLOSE
         if profile.residual_activation == "close"
         else PHASE_HOLD
         if profile.residual_activation == "hold"
@@ -156,6 +182,13 @@ def main() -> None:
     cfg.residual_activation_close_fraction = (
         profile.residual_activation_close_fraction
     )
+    # profile.action_group had never been wired to anything: bridge_train,
+    # bridge_evaluate and bridge_capture_visualization all built the environment
+    # and then set the residual fields from the profile without ever touching
+    # active_action_group_override, so every lift-bridge run used stage 2's
+    # "hands" no matter what its profile declared.  The five profiles declaring
+    # "distal_wrist" were silently running on hand joints alone.
+    cfg.active_action_group_override = str(profile.action_group)
     cfg.residual_integration = profile.residual_integration
     cfg.residual_limit_rad = profile.residual_limit_rad
     cfg.arm_approach_fraction_of_close = (
@@ -179,6 +212,7 @@ def main() -> None:
         lift_targets=args.lift_targets,
         retracted_pregrasp=args.retracted_pregrasp,
         retract_distance_m=args.retract_distance_m,
+        finger_close_scale=args.finger_close_scale,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
     )
@@ -222,9 +256,16 @@ def main() -> None:
         raise RuntimeError(
             f"only completed {len(reports)} of {args.episodes} bridge episodes"
         )
+    # The profile's stability contract, not the scorer's module defaults.  Until
+    # 2026-09-08 only target_height_m was passed, so lift50_hold1s_v1's 125-step
+    # hold was scored at the hard-coded 32 and every number taken from it was
+    # measured against a window four times shorter than the one it declared.
     summary = summarize_micro_lift_reports(
         reports,
         target_height_m=profile.target_height_m,
+        stable_hold_steps=profile.stable_hold_steps,
+        linear_speed_max_m_s=profile.linear_speed_max_m_s,
+        angular_speed_max_rad_s=profile.angular_speed_max_rad_s,
     )
     throughput = evaluation_throughput(
         episodes=args.episodes,
@@ -247,6 +288,18 @@ def main() -> None:
         "lift_targets_sha256": sha256_file(args.lift_targets),
         "deterministic_policy": True,
         "policy_mode": "zero_residual" if args.zero_actions else "checkpoint",
+        "scoring_criteria": {
+            "target_height_m": profile.target_height_m,
+            "stable_hold_steps": profile.stable_hold_steps,
+            "linear_speed_max_m_s": profile.linear_speed_max_m_s,
+            "angular_speed_max_rad_s": profile.angular_speed_max_rad_s,
+            "maximum_overshoot_m": profile.maximum_overshoot_m,
+            "minimum_height_m": profile.minimum_height_m,
+        },
+        "arm_stiffness": float(cfg.arm_stiffness),
+        "arm_damping": float(cfg.arm_damping),
+        "hand_stiffness": float(cfg.hand_stiffness),
+        "hand_damping": float(cfg.hand_damping),
         "zero_action_candidates": list(zero_action_candidates),
         "candidate_selection": effective_candidate_selection,
         "candidate_repeat_factors": [1, 1, 1, 1],

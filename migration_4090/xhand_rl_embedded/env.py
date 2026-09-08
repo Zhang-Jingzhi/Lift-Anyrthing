@@ -93,6 +93,39 @@ class XHandEmbeddedEnvCfg(DirectRLEnvCfg):
     contact_friction = 2.0
     contact_offset_m = 0.0045
     rest_offset_m = 0.0005
+    # Position-control gains for the arms and hands.
+    #
+    # These were 1500/120 and 50/2, roughly twice the 800/60 and 30/2 the
+    # neighbouring skrl task uses on the same robot.  A stiffer position-
+    # controlled arm drives through an obstacle instead of yielding to it, which
+    # is what the 2026-09-07 measurements show: when the ball is knocked clear
+    # before the fingers close, hand-object penetration is 3 mm; when a retracted
+    # start leaves the ball where the pregrasp expects it, the same pose
+    # penetrates 10-12 mm.  Exposed so the gains can be compared rather than
+    # assumed.
+    # PhysX separates interpenetrating bodies at up to this speed.  Measured
+    # 2026-09-08 on the standoff configuration: median hand-object penetration
+    # is 8.2 mm and the object's micro-lift speeds are 0.567 m/s linear and
+    # 5.84 rad/s angular against bounds of 0.05 and 0.5 -- eleven times over,
+    # at the median rather than in a tail.  The per-step capture shows the
+    # signature of injected energy rather than a launch: velocity spikes
+    # throughout with only a slow net climb.  Depenetration at 2 m/s against
+    # 8 mm of overlap is the obvious candidate, so it is exposed to be tested.
+    # Measured 2026-09-08: left_hand_pinky_joint1 leaves its commanded position
+    # by 0.84-0.89 rad (about 50 degrees) within 40 steps and stays there, in the
+    # stock configuration and in every variant tried -- with the hands 89 mm
+    # clear of the ball, so nothing external touches it, and with the arm joints
+    # tracking to 0.0007 rad over the same window.  Raising hand stiffness from
+    # 4 to 50 barely moves it (0.832 -> 0.878 rad) because the URDF caps that
+    # joint's effort at 1.1 N.m while the PD would need about 44.  Self-collision
+    # is the remaining candidate for what pushes it, so it is exposed to be
+    # tested rather than assumed.
+    robot_self_collisions = True
+    object_max_depenetration_velocity = 2.0
+    arm_stiffness = 1500.0
+    arm_damping = 120.0
+    hand_stiffness = 50.0
+    hand_damping = 2.0
     table_top_z_m = 0.72
     nominal_dataset = ""
     nominal_sample_index = 0
@@ -488,7 +521,7 @@ class XHandEmbeddedEnv(DirectRLEnv):
                     rest_offset=self.cfg.rest_offset_m,
                 ),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=True,
+                    enabled_self_collisions=bool(self.cfg.robot_self_collisions),
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=4,
                 ),
@@ -497,10 +530,14 @@ class XHandEmbeddedEnv(DirectRLEnv):
             init_state=ArticulationCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
             actuators={
                 "arms": ImplicitActuatorCfg(
-                    joint_names_expr=["(left|right)_j[1-7]"], stiffness=1500.0, damping=120.0
+                    joint_names_expr=["(left|right)_j[1-7]"],
+                    stiffness=float(self.cfg.arm_stiffness),
+                    damping=float(self.cfg.arm_damping),
                 ),
                 "hands": ImplicitActuatorCfg(
-                    joint_names_expr=["(left|right)_hand_.*"], stiffness=50.0, damping=2.0
+                    joint_names_expr=["(left|right)_hand_.*"],
+                    stiffness=float(self.cfg.hand_stiffness),
+                    damping=float(self.cfg.hand_damping),
                 ),
             },
         )
@@ -517,7 +554,9 @@ class XHandEmbeddedEnv(DirectRLEnv):
                     disable_gravity=False,
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=4,
-                    max_depenetration_velocity=2.0,
+                    max_depenetration_velocity=float(
+                        self.cfg.object_max_depenetration_velocity
+                    ),
                 ),
                 mass_props=sim_utils.MassPropertiesCfg(mass=self.cfg.object_mass_kg),
             ),

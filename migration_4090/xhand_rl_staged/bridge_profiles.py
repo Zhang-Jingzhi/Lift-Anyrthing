@@ -714,6 +714,128 @@ BRIDGE_PROFILES = {
             stable=True,
             residual_activation="lift",
         ),
+        # Lift off the table and hold, scored separately from height tracking.
+        #
+        # standoff_80mm_v1 conflates the two.  Its maximum_overshoot_m is 0.020,
+        # inherited from the 10 mm profiles, so the band is 60-100 mm -- and 82.4%
+        # of the rollouts that clear the neighbouring task's own bar (ball above
+        # 80 mm at the end with both hands in contact) finish above 100 mm and are
+        # scored as failures by our own gate.  The median successful lift is
+        # 115 mm.  Penalising an 115 mm two-handed lift as an overshoot is not a
+        # useful objective for a task whose stated requirement is lifting.
+        #
+        # So the target drops to 50 mm with a 100 mm overshoot allowance, which
+        # accepts anything from 50 to 150 mm, and the hold requirement rises from
+        # 32 steps to 125 -- a full second at this control rate, four times the
+        # old window.  Height tracking is not abandoned, it is measured
+        # separately; overshoot keeps its penalty weight so drifting upward still
+        # costs, it just no longer disqualifies.
+        replace(
+            _profile(
+                "lift50_hold1s_v1",
+                target_height_m=0.050,
+                stable_hold_steps=125,
+                stable=True,
+                residual_activation="approach",
+            ),
+            action_group="all",
+            episode_length_s=7.25,
+            phase_fractions=(0.40, 0.25, 0.20, 0.15),
+            maximum_overshoot_m=0.100,
+            residual_integration=0.010,
+            residual_limit_rad=0.30,
+        ),
+        # standoff at the neighbouring task's own goal height.
+        #
+        # Measured 2026-09-08: under a 10 mm target the open-loop rollout holds
+        # the ball above 20 mm with both hands in contact in 35.4% of episodes
+        # but clears 80 mm in 0.8%, because nothing ever commands an 80 mm lift --
+        # the lift targets raise the palms by 10 mm.  The neighbouring skrl task
+        # sets goal_lift_height to 0.08 and judges stability by tilt, with no
+        # hand-object penetration term anywhere in its environment; ours requires
+        # 32 steps inside 0.05 m/s and 0.5 rad/s, which is the stricter test.
+        #
+        # So the height moves to theirs and the stability bounds stay ours: same
+        # stable_hold_steps, same speed bounds, same overshoot allowance.
+        replace(
+            _profile(
+                "standoff_80mm_v1",
+                target_height_m=0.080,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="approach",
+            ),
+            action_group="all",
+            episode_length_s=7.25,
+            phase_fractions=(0.40, 0.25, 0.20, 0.15),
+            residual_integration=0.010,
+            residual_limit_rad=0.30,
+        ),
+        # The standoff formulation, mirroring how the neighbouring skrl task
+        # actually works rather than how we assumed it worked.
+        #
+        # Everything measured on 2026-09-07 points at one interlock.  The BODex
+        # pregrasp puts the palms 0.89-7.39 mm from the ball; the arms replay a
+        # fixed trajectory to get there; the policy may only nudge fingers after
+        # the grasp is formed.  Each single fix is cancelled by the other two:
+        # paying for lift changed nothing (0.0215 vs 0.0234 over six seeds),
+        # widening the residual to PHASE_CLOSE made it worse (0.0143 vs 0.0306),
+        # and softening the arms to the neighbour's 800/60 traded penetration
+        # (3.63 -> 2.81 mm) for contact (bilateral 0.571 -> 0.489) because at
+        # that distance stiffness is what creates contact at all.
+        #
+        # The neighbour starts its hands 100-120 mm out (their standoffs are
+        # 0.10 m left and 0.12 m right for narrow objects) and closes with arm
+        # actions the policy owns, holding the pregrasp as an attractor it may
+        # leave.  So they are not learning from less prior than us -- they hold
+        # the same kind of prior as a guide where we hold it as a constraint.
+        #
+        # This profile does the same: start retracted (pass --retracted-pregrasp),
+        # let the residual act from PHASE_APPROACH, and give it every joint
+        # rather than fingers only.  Episode length and the softer gains follow
+        # the neighbour too, since a policy that must drive the arms in needs
+        # time and needs an arm that yields on contact.
+        replace(
+            _profile(
+                "standoff_10mm_v1",
+                target_height_m=0.010,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="approach",
+            ),
+            action_group="all",
+            episode_length_s=7.25,
+            phase_fractions=(0.40, 0.25, 0.20, 0.15),
+            residual_integration=0.010,
+            residual_limit_rad=0.30,
+        ),
+        # stable_10mm_v1 with the residual given room to matter.
+        #
+        # Measured 2026-09-07 over six seeds x 512 episodes, the retrained
+        # lift-reward policy ties a zero action vector on every metric
+        # (sustained 0.0215 vs 0.0234) even after lift_height and stable_lift
+        # were paid for the first time.  Under stable_10mm_v1 the residual only
+        # activates at PHASE_LIFT, touches hand joints alone, and is clamped to
+        # 0.12 rad -- roughly +-7 degrees of finger adjustment applied after the
+        # grasp has already been formed open-loop.  A grasp that is going to
+        # fail is already failing by then.
+        #
+        # This opens the residual at PHASE_CLOSE, where the fingers are still
+        # arriving, and widens the clamp and integration rate to match
+        # stable_35mm_free_v1.  Everything else -- target, hold length, noise,
+        # phase fractions -- is stable_10mm_v1 untouched, so a difference is
+        # attributable to the residual's authority and nothing else.
+        replace(
+            _profile(
+                "stable_10mm_free_v1",
+                target_height_m=0.010,
+                stable_hold_steps=32,
+                stable=True,
+                residual_activation="close",
+            ),
+            residual_integration=0.010,
+            residual_limit_rad=0.15,
+        ),
         replace(
             _profile(
                 "stable_35mm_v1",

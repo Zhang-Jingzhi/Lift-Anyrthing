@@ -31,6 +31,7 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         profile: LiftBridgeProfile,
         retracted_pregrasp: Path | None = None,
         retract_distance_m: float = 0.10,
+        finger_close_scale: float = 1.0,
         **kwargs: Any,
     ):
         self.bridge_profile = profile
@@ -40,6 +41,26 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             Path(retracted_pregrasp) if retracted_pregrasp else None
         )
         self.bridge_retract_distance_m = float(retract_distance_m)
+        # How far past the BODex grasp pose the fingers are driven.
+        #
+        # Measured 2026-09-08: the grasp poses do not touch the object.  Their
+        # minimum clearance to the exact mesh is 0.34, 0.96, 2.48 and 13.47 mm on
+        # the four zero_overlap4 candidates, and against the convex hulls the
+        # simulator actually collides with it is -0.44 to -13.17 mm, i.e. clear
+        # either way.  Executed faithfully the hands close on empty space: with
+        # self-collisions disabled, so that the fingers hold their commanded
+        # pose, contact is 0.000, penetration is 0.000 and the ball rises 3.3 mm.
+        #
+        # Every contact this pipeline has ever made came from phantom
+        # self-collisions between convex hulls pushing the fingers 48 degrees off
+        # target into positions that happen to reach the ball, which is why lift
+        # success tracks grasp clearance so exactly: 0.34 mm gives 176/256 and
+        # 13.47 mm gives 0/256.
+        #
+        # This extends the close along the same pregrasp-to-grasp direction so
+        # the fingers reach the surface deliberately.  1.0 reproduces the old
+        # behaviour exactly.
+        self.bridge_finger_close_scale = float(finger_close_scale)
         self.bridge_retracted_pregrasp = None
         super().__init__(cfg, **kwargs)
         self._load_retracted_pregrasp()
@@ -74,10 +95,18 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             dtype=torch.float32,
             device=self.device,
         )
-        if profile.action_group not in ("hands", "distal_wrist"):
+        if profile.action_group not in ("hands", "distal_wrist", "all"):
             raise ValueError(
-                "lift bridge action group must be hands or distal_wrist"
+                "lift bridge action group must be hands, distal_wrist or all"
             )
+        # "all" is the standoff formulation and deliberately breaks the bridge's
+        # founding assumption that the BODex arm trajectory is replayed
+        # untouched.  That assumption is what the 2026-09-07 measurements ran
+        # out of road on: with the hands starting between -9.6 and +2.4 mm from
+        # the ball and the arms on rails, no reward, iteration count or gain
+        # setting moved a policy past a zero action vector.  The mask the parent
+        # built from the action group already covers every joint, so nothing is
+        # overridden here.
         if profile.action_group == "distal_wrist":
             # Keep the 38D policy ABI, but expose only the two distal wrist
             # triplets to this isolated formation retry.  Nominal BODex
@@ -86,6 +115,19 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             for index, name in enumerate(self.joint_names):
                 if name.endswith(("_j5", "_j6", "_j7")):
                     self.action_mask[0, index] = 1.0
+        self.bridge_hand_joint_mask = torch.tensor(
+            [["_hand_" in name for name in self.joint_names]],
+            dtype=torch.bool,
+            device=self.device,
+        )
+        # Consecutive steps where the stability condition and bilateral contact
+        # hold at the same time.  See _update_metrics.
+        self.bridge_current_held_steps = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.bridge_maximum_held_steps = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         self.bridge_current_stable_steps = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
         )
@@ -167,6 +209,16 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         phase is left to the parent untouched.
         """
         target = super()._base_target(code)
+        if self.bridge_finger_close_scale != 1.0:
+            hand = self.bridge_hand_joint_mask
+            closing = target - self.nominal_pregrasp
+            extended = self.nominal_pregrasp + (
+                closing * self.bridge_finger_close_scale
+            )
+            limits = self.robot.data.soft_joint_pos_limits
+            extended = torch.clamp(extended, limits[..., 0], limits[..., 1])
+            beyond_approach = (code != PHASE_APPROACH).unsqueeze(-1)
+            target = torch.where(hand & beyond_approach, extended, target)
         if self.bridge_retracted_pregrasp is None:
             return target
         approach = code == PHASE_APPROACH
@@ -240,6 +292,8 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             )
             self.robot.set_joint_position_target(q, env_ids=env_ids)
         self.bridge_current_stable_steps[env_ids] = 0
+        self.bridge_current_held_steps[env_ids] = 0
+        self.bridge_maximum_held_steps[env_ids] = 0
         self.bridge_maximum_stable_steps[env_ids] = 0
         self.bridge_physically_bounded[env_ids] = True
         self.bridge_current_safe[env_ids] = True
@@ -340,6 +394,19 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         self.bridge_maximum_stable_steps = torch.maximum(
             self.bridge_maximum_stable_steps,
             self.bridge_current_stable_steps,
+        )
+        held = state["stable"] & (
+            (self._sensor_force("left") > 0.02)
+            & (self._sensor_force("right") > 0.02)
+        )
+        self.bridge_current_held_steps = torch.where(
+            held,
+            self.bridge_current_held_steps + 1,
+            torch.zeros_like(self.bridge_current_held_steps),
+        )
+        self.bridge_maximum_held_steps = torch.maximum(
+            self.bridge_maximum_held_steps,
+            self.bridge_current_held_steps,
         )
         height_bounded = (
             state["finite"]
@@ -605,6 +672,13 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
                 ),
                 "maximum_micro_lift_stable_steps": int(
                     self.bridge_maximum_stable_steps[env_id].item()
+                ),
+                # Longest run where stability and bilateral contact held at the
+                # same time.  The field above counts stability alone, so an
+                # episode could satisfy the hold from one stretch of the rollout
+                # and the contact criteria from another.
+                "maximum_micro_lift_held_steps": int(
+                    self.bridge_maximum_held_steps[env_id].item()
                 ),
                 "maximum_micro_lift_linear_speed_m_s": float(
                     self.bridge_maximum_linear_speed[env_id].item()

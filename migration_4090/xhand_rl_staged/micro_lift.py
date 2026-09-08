@@ -7,7 +7,11 @@ import math
 from typing import Any
 
 
-# Match the stability contract used by the formal Stage-4 micro-lift stage.
+# Defaults for the stability contract.  These were the only values the scorer
+# could ever use: classify_micro_lift_report read them directly and its callers
+# had no way to override, so a profile declaring stable_hold_steps=125 was still
+# scored at 32.  They are now defaults for keyword arguments; bridge_evaluate
+# passes the profile's own contract and records it with the results.
 MICRO_LIFT_LINEAR_SPEED_MAX_M_S = 0.05
 MICRO_LIFT_ANGULAR_SPEED_MAX_RAD_S = 0.50
 MICRO_LIFT_STABLE_HOLD_STEPS = 32
@@ -27,10 +31,17 @@ def controlled_height_upper_bound_m(target_height_m: float) -> float:
 
 
 def classify_micro_lift_report(
-    report: dict[str, Any], *, target_height_m: float
+    report: dict[str, Any],
+    *,
+    target_height_m: float,
+    stable_hold_steps: int = MICRO_LIFT_STABLE_HOLD_STEPS,
+    linear_speed_max_m_s: float = MICRO_LIFT_LINEAR_SPEED_MAX_M_S,
+    angular_speed_max_rad_s: float = MICRO_LIFT_ANGULAR_SPEED_MAX_RAD_S,
 ) -> dict[str, Any]:
     if target_height_m <= 0.0:
         raise ValueError("micro-lift target must be positive")
+    if stable_hold_steps <= 0:
+        raise ValueError("stable hold steps must be positive")
     gates = report.get("stage_gates", {})
     final_height = float(report["final_lift_height_m"])
     maximum_height = float(report["maximum_lift_height_m"])
@@ -40,13 +51,18 @@ def classify_micro_lift_report(
     physically_bounded = bool(report.get("micro_lift_physically_bounded", False))
     stable_terminal = (
         float(report.get("object_linear_speed_m_s", math.inf))
-        <= MICRO_LIFT_LINEAR_SPEED_MAX_M_S
+        <= linear_speed_max_m_s
         and float(report.get("object_angular_speed_rad_s", math.inf))
-        <= MICRO_LIFT_ANGULAR_SPEED_MAX_RAD_S
+        <= angular_speed_max_rad_s
     )
     stable_hold = (
-        int(report.get("maximum_micro_lift_stable_steps", 0))
-        >= MICRO_LIFT_STABLE_HOLD_STEPS
+        int(report.get("maximum_micro_lift_stable_steps", 0)) >= stable_hold_steps
+    )
+    held_window_available = "maximum_micro_lift_held_steps" in report
+    held_hold = (
+        int(report["maximum_micro_lift_held_steps"]) >= stable_hold_steps
+        if held_window_available
+        else stable_hold
     )
     stage2_contact_pass = all(
         gates.get(name) is True
@@ -64,13 +80,15 @@ def classify_micro_lift_report(
         and not bool(report.get("terminated_early", False))
     )
     stage4_ready = controlled and stable_terminal and stable_hold
-    sustained = stage4_ready and stage2_contact_pass
+    sustained = controlled and stable_terminal and held_hold and stage2_contact_pass
     return {
         "target_reached": reached,
         "target_retained_at_terminal": retained,
         "physically_bounded_micro_lift": physically_bounded,
         "stable_terminal_state": stable_terminal,
         "stable_micro_lift_hold": stable_hold,
+        "held_micro_lift_hold": held_hold,
+        "held_window_available": held_window_available,
         "controlled_micro_lift": controlled,
         "stage4_ready_micro_lift": stage4_ready,
         "stage2_contact_pass": stage2_contact_pass,
@@ -107,12 +125,32 @@ def _failure_funnel(
 
 
 def summarize_micro_lift_reports(
-    reports: list[dict[str, Any]], *, target_height_m: float
+    reports: list[dict[str, Any]],
+    *,
+    target_height_m: float,
+    stable_hold_steps: int = MICRO_LIFT_STABLE_HOLD_STEPS,
+    linear_speed_max_m_s: float = MICRO_LIFT_LINEAR_SPEED_MAX_M_S,
+    angular_speed_max_rad_s: float = MICRO_LIFT_ANGULAR_SPEED_MAX_RAD_S,
 ) -> dict[str, Any]:
     if not reports:
         raise ValueError("micro-lift summary requires at least one report")
+    criteria = {
+        "target_height_m": target_height_m,
+        "stable_hold_steps": stable_hold_steps,
+        "linear_speed_max_m_s": linear_speed_max_m_s,
+        "angular_speed_max_rad_s": angular_speed_max_rad_s,
+    }
     classified = [
-        {**report, **classify_micro_lift_report(report, target_height_m=target_height_m)}
+        {
+            **report,
+            **classify_micro_lift_report(
+                report,
+                target_height_m=target_height_m,
+                stable_hold_steps=stable_hold_steps,
+                linear_speed_max_m_s=linear_speed_max_m_s,
+                angular_speed_max_rad_s=angular_speed_max_rad_s,
+            ),
+        }
         for report in reports
     ]
     metrics = (
@@ -121,6 +159,8 @@ def summarize_micro_lift_reports(
         "physically_bounded_micro_lift",
         "stable_terminal_state",
         "stable_micro_lift_hold",
+        "held_micro_lift_hold",
+        "held_window_available",
         "controlled_micro_lift",
         "stage4_ready_micro_lift",
         "stage2_contact_pass",

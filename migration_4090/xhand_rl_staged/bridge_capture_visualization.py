@@ -33,6 +33,21 @@ parser.add_argument("--output-dir", type=Path, required=True)
 parser.add_argument("--seed", type=int, default=20262460)
 parser.add_argument("--num-envs", type=int, default=4)
 parser.add_argument("--episodes", type=int, default=4)
+# The capture tool predates the standoff work and could not reproduce the
+# configurations being measured: no retracted start, no zero-action control, no
+# gain overrides.  Per-step object state is the only way to see when the sphere
+# is launched -- the scalar reports say it leaves the approach phase at 0.4 m/s
+# against a 0.05 m/s bound, but not what hits it.
+parser.add_argument("--retracted-pregrasp", type=Path)
+parser.add_argument("--retract-distance-m", type=float, default=0.10)
+parser.add_argument("--zero-actions", action="store_true")
+parser.add_argument("--finger-close-scale", type=float, default=1.0)
+parser.add_argument("--no-self-collisions", action="store_true")
+parser.add_argument("--object-max-depenetration-velocity", type=float, default=None)
+parser.add_argument("--arm-stiffness", type=float, default=None)
+parser.add_argument("--arm-damping", type=float, default=None)
+parser.add_argument("--hand-stiffness", type=float, default=None)
+parser.add_argument("--hand-damping", type=float, default=None)
 parser.add_argument("--kit-portable-root", type=Path)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -155,18 +170,38 @@ def main() -> None:
         terminal_contact_progress_mode="joint_gate",
         distributed_reward_requires_current_bilateral_contact=True,
     )
+    for _field, _value in (
+        ("robot_self_collisions", False if args.no_self_collisions else None),
+        ("object_max_depenetration_velocity",
+         args.object_max_depenetration_velocity),
+        ("arm_stiffness", args.arm_stiffness),
+        ("arm_damping", args.arm_damping),
+        ("hand_stiffness", args.hand_stiffness),
+        ("hand_damping", args.hand_damping),
+    ):
+        if _value is not None:
+            setattr(cfg, _field, float(_value))
     cfg.episode_length_s = profile.episode_length_s
     cfg.approach_fraction, cfg.close_fraction, cfg.lift_fraction, cfg.hold_fraction = profile.phase_fractions
     from migration_4090.xhand_rl_embedded.env import PHASE_CLOSE, PHASE_HOLD, PHASE_LIFT
 
     cfg.residual_activation_phase = (
-        PHASE_CLOSE
+        PHASE_APPROACH
+        if profile.residual_activation == "approach"
+        else PHASE_CLOSE
         if profile.residual_activation == "close"
         else PHASE_HOLD
         if profile.residual_activation == "hold"
         else PHASE_LIFT
     )
     cfg.residual_activation_close_fraction = profile.residual_activation_close_fraction
+    # profile.action_group had never been wired to anything: bridge_train,
+    # bridge_evaluate and bridge_capture_visualization all built the environment
+    # and then set the residual fields from the profile without ever touching
+    # active_action_group_override, so every lift-bridge run used stage 2's
+    # "hands" no matter what its profile declared.  The five profiles declaring
+    # "distal_wrist" were silently running on hand joints alone.
+    cfg.active_action_group_override = str(profile.action_group)
     cfg.residual_integration = profile.residual_integration
     cfg.residual_limit_rad = profile.residual_limit_rad
     cfg.arm_approach_fraction_of_close = profile.arm_approach_fraction_of_close
@@ -181,6 +216,9 @@ def main() -> None:
         lift_targets=args.lift_targets,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
+        retracted_pregrasp=args.retracted_pregrasp,
+        retract_distance_m=args.retract_distance_m,
+        finger_close_scale=args.finger_close_scale,
     )
     runner_cfg = XHandStagedPPORunnerCfg()
     runner_cfg.seed = args.seed
@@ -194,7 +232,14 @@ def main() -> None:
     steps = 0
     with torch.inference_mode():
         while len(env.captured) < args.episodes and steps < maximum_steps:
-            actions = runner.alg.policy.act_inference(observation)
+            if args.zero_actions:
+                actions = torch.zeros(
+                    (args.num_envs, int(cfg.action_space)),
+                    dtype=torch.float32,
+                    device=cfg.sim.device,
+                )
+            else:
+                actions = runner.alg.policy.act_inference(observation)
             observation, _, _, _ = wrapped.step(actions)
             steps += 1
     episodes = env.captured[: args.episodes]

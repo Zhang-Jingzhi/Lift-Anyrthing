@@ -80,6 +80,19 @@ parser.add_argument(
 # These expose the weights instead of hardcoding them.  Defaults match stage 4/5 so
 # the bridge actually optimises the thing it is evaluated on; pass 0.0 to reproduce
 # the historical runs.
+# bridge_evaluate and bridge_capture_visualization gained these on 2026-09-08
+# and bridge_train did not, so the 80 mm runs trained at the stock 1500/120 and
+# 50/2 while their own zero-action baseline ran at 800/60 and 4/2.  A policy
+# compared across that gap cannot be read: a loss says nothing about whether the
+# learning failed or the environment differed.  Same names and defaults as the
+# evaluator so a recipe can be copied between them verbatim.
+parser.add_argument("--finger-close-scale", type=float, default=1.0)
+parser.add_argument("--no-self-collisions", action="store_true")
+parser.add_argument("--object-max-depenetration-velocity", type=float, default=None)
+parser.add_argument("--arm-stiffness", type=float, default=None)
+parser.add_argument("--arm-damping", type=float, default=None)
+parser.add_argument("--hand-stiffness", type=float, default=None)
+parser.add_argument("--hand-damping", type=float, default=None)
 parser.add_argument("--lift-height-reward-weight", type=float, default=14.0)
 parser.add_argument("--stable-lift-reward-weight", type=float, default=8.0)
 parser.add_argument("--terminal-success-weight", type=float, default=30.0)
@@ -101,7 +114,7 @@ from migration_4090.xhand_rl_embedded.contracts import (
     latest_policy_checkpoint,
     validate_manifest,
 )
-from migration_4090.xhand_rl_embedded.env import PHASE_CLOSE, PHASE_HOLD, PHASE_LIFT
+from migration_4090.xhand_rl_embedded.env import PHASE_APPROACH, PHASE_CLOSE, PHASE_HOLD, PHASE_LIFT
 
 from .bridge_env import XHandLiftBridgeEnv
 from .bridge_profiles import get_bridge_profile
@@ -202,7 +215,9 @@ def main() -> None:
         cfg.hold_fraction,
     ) = profile.phase_fractions
     cfg.residual_activation_phase = (
-        PHASE_CLOSE
+        PHASE_APPROACH
+        if profile.residual_activation == "approach"
+        else PHASE_CLOSE
         if profile.residual_activation == "close"
         else PHASE_HOLD
         if profile.residual_activation == "hold"
@@ -211,6 +226,23 @@ def main() -> None:
     cfg.residual_activation_close_fraction = (
         profile.residual_activation_close_fraction
     )
+    # profile.action_group had never been wired to anything: bridge_train,
+    # bridge_evaluate and bridge_capture_visualization all built the environment
+    # and then set the residual fields from the profile without ever touching
+    # active_action_group_override, so every lift-bridge run used stage 2's
+    # "hands" no matter what its profile declared.  The five profiles declaring
+    # "distal_wrist" were silently running on hand joints alone.
+    for _field, _value in (
+        ("robot_self_collisions", False if args.no_self_collisions else None),
+        ("object_max_depenetration_velocity", args.object_max_depenetration_velocity),
+        ("arm_stiffness", args.arm_stiffness),
+        ("arm_damping", args.arm_damping),
+        ("hand_stiffness", args.hand_stiffness),
+        ("hand_damping", args.hand_damping),
+    ):
+        if _value is not None:
+            setattr(cfg, _field, float(_value))
+    cfg.active_action_group_override = str(profile.action_group)
     cfg.residual_integration = profile.residual_integration
     cfg.residual_limit_rad = profile.residual_limit_rad
     cfg.arm_approach_fraction_of_close = (
@@ -245,6 +277,7 @@ def main() -> None:
         lift_targets=args.lift_targets,
         retracted_pregrasp=args.retracted_pregrasp,
         retract_distance_m=args.retract_distance_m,
+        finger_close_scale=args.finger_close_scale,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
     )
@@ -382,6 +415,13 @@ def main() -> None:
         "device": cfg.sim.device,
         "learning_rate": args.learning_rate,
         "entropy_coef": args.entropy_coef,
+        "arm_stiffness": float(cfg.arm_stiffness),
+        "arm_damping": float(cfg.arm_damping),
+        "hand_stiffness": float(cfg.hand_stiffness),
+        "hand_damping": float(cfg.hand_damping),
+        "object_max_depenetration_velocity": float(
+            cfg.object_max_depenetration_velocity
+        ),
         "lift_height_reward_weight": float(cfg.lift_height_reward_weight),
         "stable_lift_reward_weight": float(cfg.stable_lift_reward_weight),
         "terminal_success_weight": float(cfg.terminal_success_weight),
