@@ -576,7 +576,14 @@ class XHandEmbeddedEnv(DirectRLEnv):
             filter_prim_paths_expr=[row[2] for row in layout],
             track_contact_points=True,
             track_friction_forces=False,
-            max_contact_data_count_per_prim=256,
+            # 256 x 1 body x 64 envs is 16384, and PhysX silently truncates
+            # past that: "Incomplete contact data is reported in
+            # GpuRigidContactView::getContactData".  Holding the object still
+            # during grasp acquisition keeps the hands pressed against it
+            # instead of pushing it away, so contact points accumulate and
+            # overrun the budget -- and the readings that get dropped are
+            # exactly the ones the stage-2 contact criteria are computed from.
+            max_contact_data_count_per_prim=1024,
         )
         self.robot = Articulation(robot_cfg)
         self.object = RigidObject(object_cfg)

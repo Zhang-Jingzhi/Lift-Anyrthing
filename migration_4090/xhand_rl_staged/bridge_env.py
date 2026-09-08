@@ -32,6 +32,9 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         retracted_pregrasp: Path | None = None,
         retract_distance_m: float = 0.10,
         finger_close_scale: float = 1.0,
+        freeze_object_until_bilateral: bool = False,
+        freeze_release_force_n: float = 0.02,
+        freeze_release_hold_steps: int = 4,
         **kwargs: Any,
     ):
         self.bridge_profile = profile
@@ -61,6 +64,9 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         # the fingers reach the surface deliberately.  1.0 reproduces the old
         # behaviour exactly.
         self.bridge_finger_close_scale = float(finger_close_scale)
+        self.bridge_freeze_object = bool(freeze_object_until_bilateral)
+        self.bridge_freeze_release_force_n = float(freeze_release_force_n)
+        self.bridge_freeze_release_hold_steps = int(freeze_release_hold_steps)
         self.bridge_retracted_pregrasp = None
         super().__init__(cfg, **kwargs)
         self._load_retracted_pregrasp()
@@ -119,6 +125,26 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             [["_hand_" in name for name in self.joint_names]],
             dtype=torch.bool,
             device=self.device,
+        )
+        # Grasp-acquisition freeze.  frozen[i] is true while environment i still
+        # has the object pinned at its reset pose; released_steps counts the
+        # consecutive steps both hands have been in contact, and the latch opens
+        # once for good.
+        # Armed by _reset_idx, never here.  The pose to hold is only known once
+        # an episode has been reset; writing the zero-initialised state would
+        # push a degenerate quaternion into PhysX, which is what tripped the
+        # device-side assert on the first freeze runs.
+        self.bridge_object_frozen = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.bridge_freeze_contact_steps = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.bridge_frozen_object_state = torch.zeros(
+            (self.num_envs, 13), dtype=torch.float32, device=self.device
+        )
+        self.bridge_freeze_release_step = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
         )
         # Consecutive steps where the stability condition and bilateral contact
         # hold at the same time.  See _update_metrics.
@@ -254,6 +280,48 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             raise ValueError("contact_gate_activation_threshold must be in [0, 1]")
         return bilateral_now & (self._contact_gate_progress() >= threshold)
 
+    def _hold_frozen_object(self) -> None:
+        """Pin the object at its reset pose until both hands are on it.
+
+        The latch opens when both sides report contact force for
+        freeze_release_hold_steps consecutive steps, and never closes again.  A
+        single hand is not enough: releasing on one contact is what turns the
+        neighbouring task's lifts into ejections, their own report showing
+        final_lift 1.000 at 90 degrees of tilt with no bilateral hold.
+
+        While frozen the pose is written every step with zero velocity.  That is
+        safe only before contact; once a hand presses on it, re-asserting the
+        pose drives the body through the collider, which is why release is
+        checked first and the write is skipped for any environment released this
+        step.
+        """
+        if not self.bridge_freeze_object:
+            return
+        frozen = self.bridge_object_frozen
+        if not bool(frozen.any()):
+            return
+        threshold = self.bridge_freeze_release_force_n
+        both = (self._sensor_force("left") > threshold) & (
+            self._sensor_force("right") > threshold
+        )
+        self.bridge_freeze_contact_steps = torch.where(
+            both & frozen,
+            self.bridge_freeze_contact_steps + 1,
+            torch.zeros_like(self.bridge_freeze_contact_steps),
+        )
+        release = frozen & (
+            self.bridge_freeze_contact_steps >= self.bridge_freeze_release_hold_steps
+        )
+        if bool(release.any()):
+            self.bridge_freeze_release_step[release] = self.episode_length_buf[release]
+            self.bridge_object_frozen[release] = False
+            frozen = self.bridge_object_frozen
+        ids = torch.nonzero(frozen, as_tuple=False).squeeze(-1)
+        if ids.numel():
+            state = self.bridge_frozen_object_state[ids].clone()
+            state[:, 7:] = 0.0
+            self.object.write_root_state_to_sim(state, env_ids=ids)
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # Keep approach/closure exactly on the BODex/IK nominal trajectory.
         # Once a gated profile is active, a contact loss immediately removes
@@ -262,6 +330,9 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         if bool(getattr(self.bridge_profile, "contact_gated_residual", False)):
             actions = actions * gate.unsqueeze(-1).to(actions.dtype)
         super()._pre_physics_step(actions)
+        # Before the physics of this step, so a frozen object never integrates
+        # the disturbance the approach would otherwise give it.
+        self._hold_frozen_object()
         if bool(getattr(self.bridge_profile, "contact_gated_residual", False)):
             self.integrated_residual[~gate] = 0.0
             self.extras.setdefault("log", {})["bridge/residual_gate_fraction"] = (
@@ -294,6 +365,13 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         self.bridge_current_stable_steps[env_ids] = 0
         self.bridge_current_held_steps[env_ids] = 0
         self.bridge_maximum_held_steps[env_ids] = 0
+        if self.bridge_freeze_object:
+            self.bridge_object_frozen[env_ids] = True
+            self.bridge_freeze_contact_steps[env_ids] = 0
+            self.bridge_freeze_release_step[env_ids] = -1
+            self.bridge_frozen_object_state[env_ids] = self.object.data.root_state_w[
+                env_ids
+            ].clone()
         self.bridge_maximum_stable_steps[env_ids] = 0
         self.bridge_physically_bounded[env_ids] = True
         self.bridge_current_safe[env_ids] = True
@@ -679,6 +757,14 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
                 # and the contact criteria from another.
                 "maximum_micro_lift_held_steps": int(
                     self.bridge_maximum_held_steps[env_id].item()
+                ),
+                # -1 means the object was never frozen, or was still frozen when
+                # the episode ended: no bilateral contact ever formed.
+                "freeze_release_step": int(
+                    self.bridge_freeze_release_step[env_id].item()
+                ),
+                "object_frozen_at_end": bool(
+                    self.bridge_object_frozen[env_id].item()
                 ),
                 "maximum_micro_lift_linear_speed_m_s": float(
                     self.bridge_maximum_linear_speed[env_id].item()
