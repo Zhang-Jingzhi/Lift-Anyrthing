@@ -3,9 +3,13 @@
 
 Same problem and same output schema as build_micro_lift_targets.py: take each
 candidate's grasp pose, raise both palm frames by the requested height, and
-re-solve the arms while the BODex finger shape is preserved.  That script needs
-jax and jaxlie, and the interpreter that had them is gone from this machine, so
-this reuses the damped-least-squares solver written for the retracted pregrasp.
+re-solve the arms while the BODex finger shape is preserved, reusing the
+damped-least-squares solver written for the retracted pregrasp.
+
+Written on 2026-09-08 believing no interpreter here had jax; one does, at
+/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/tro.  See
+build_retracted_pregrasp_numpy for why this is kept and when to prefer the
+Pyroki version.
 
 The solver clamps to the joint limits on every step: without that the seven-DOF
 null space parks left_j6 past its 1.05 rad limit and Isaac silently clamps it,

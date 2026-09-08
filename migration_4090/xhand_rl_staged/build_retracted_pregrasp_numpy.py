@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Solve a retracted pregrasp without jax.
 
-build_retracted_pregrasp.py solves this with Pyroki, but the interpreter that
-had jax and jaxlie no longer exists on this machine: HANDOFF names
-miniforge3/envs/tro, nothing under that path resolves any more, and no
-interpreter on the box imports jax.  Installing into the neighbouring project's
-environments is out of bounds, so this re-solves the same problem with numpy:
-push each palm back along its own outward normal and re-solve the seven arm
-joints on that side, leaving the BODex finger shape untouched.
+build_retracted_pregrasp.py solves this with Pyroki.  This solves the same
+problem with numpy and no jax: push each palm back along its own outward normal
+and re-solve the seven arm joints on that side, leaving the BODex finger shape
+untouched.
+
+Written on 2026-09-08 under the mistaken belief that no interpreter on this
+machine had jax.  It does --
+/media/home/zhangjingzhi/.tro_grasp_tools/miniforge3/envs/tro (jax 0.6.2,
+jaxlie, pyroki); the directory is hidden, which is why a search for
+*/miniforge3 missed it.  Kept because it is validated against the Pyroki output
+(palm positions agree to 0.011-0.026 mm on three of four candidates, 2.36 mm on
+the fourth) and needs only numpy, yourdfpy and torch, so it runs in the same
+interpreter as the geometry measurements.  Prefer the Pyroki version when its
+extra objectives matter: this one has no wrist-rest or palm-direction term and
+so picks a different null-space solution.
 
 Damped least squares on a finite-difference Jacobian.  Fourteen joints total
 across four candidates, so the cost of not having an analytic Jacobian does not
