@@ -1,0 +1,180 @@
+{
+  "schema": "xhand_locked_six_rl_embedded_pipeline_v2",
+  "algorithm": {
+    "backend": "isaaclab_rsl_rl_ppo_embedded_physics_v2",
+    "family": "reinforcement_learning",
+    "trainer": "rsl_rl.ppo",
+    "policy": "residual_joint_target_actor_critic",
+    "reward_revision": "meshaware_closed_hand_seed_residual_v5",
+    "ppo_revision": "fixed_lr_scaled_return_v4",
+    "ppo_schedule": "fixed",
+    "ppo_learning_rate": 0.0003,
+    "training_reward_scale": 0.01,
+    "bodex_algorithm": false,
+    "note": "Physical gates are part of the Isaac Lab RL episode; no candidate replay validator is used."
+  },
+  "acceptance_profile": "embedded_physics_pass",
+  "strict_visual_mesh_accepted": false,
+  "target_per_object": 100,
+  "table_top_z_m": 0.72,
+  "robot_usd": {
+    "path": "/media/home/zhangjingzhi/pipeline_20260906/assets/xhand_decomp_flat.usd",
+    "sha256": "15695482268ede19e56e46240cee1ce1df84f76c487af45f3f19e6dab320cf62"
+  },
+  "robot_visual_urdf": {
+    "path": "/media/home/st/curobo_robot_assets/tianji_xhand/migration_4090/assets/xhand_fullbody_approx_v1/linkhou_xhand_fullbody_approx_v1_fixed_ik.urdf",
+    "sha256": "97a5344663f80b2d27ba895e120654a1655a63d4d809bd1d3acfe2277d98c156"
+  },
+  "physics": {
+    "dt_s": 0.002,
+    "gravity_m_s2": 9.8,
+    "friction": 2.0,
+    "object_mass_kg": 0.55,
+    "position_iterations": 16,
+    "velocity_iterations": 4,
+    "contact_offset_m": 0.0045,
+    "rest_offset_m": 0.0005
+  },
+  "episode_schedule": {
+    "episode_length_s": 8.0,
+    "fractions": {
+      "approach": 0.1,
+      "close": 0.25,
+      "lift": 0.2,
+      "hold": 0.15,
+      "disturbance": 0.2,
+      "ablation": 0.1
+    },
+    "disturbance_count": 12,
+    "single_hand_ablation_count": 2
+  },
+  "embedded_thresholds": {
+    "lift_min_m": 0.05,
+    "lift_reward_target_m": 0.08,
+    "gravity_drift_max_m": 0.01,
+    "translation_disturbance_max_m": 0.015,
+    "rotation_disturbance_max_rad": 0.12,
+    "contact_presence_fraction_min": 0.9,
+    "inactive_hand_contact_fraction_max": 0.1,
+    "physx_penetration_max_m": 0.0005,
+    "force_closure_residual_max": 0.08,
+    "force_closure_epsilon_min": 0.0001,
+    "disturbance_force_n": 0.275,
+    "disturbance_torque_nm": 0.04
+  },
+  "required_embedded_gates": [
+    "asset_hashes",
+    "rl_provenance",
+    "embedded_isaaclab_episode",
+    "finite_state",
+    "bilateral_contact_continuity",
+    "arm_joint_lift",
+    "lift_height",
+    "gravity_hold",
+    "translation_disturbance",
+    "rotation_disturbance",
+    "physx_penetration",
+    "formal_force_closure",
+    "single_hand_ablations",
+    "unique_pose",
+    "trajectory_recorded"
+  ],
+  "omitted_expensive_gates": [
+    "multistage_visual_mesh",
+    "visual_mesh_table_clearance"
+  ],
+  "objects": {
+    "sphere": {
+      "extents_m": [
+        0.296,
+        0.296,
+        0.268
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/meshes_centered/large_sphere.obj",
+        "sha256": "11f86bd9c346bd59fe6f0ef9479fe39f3fad0cc6fe422dea1dbd7e1b13b83ae8"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/sphere.usd",
+        "sha256": "505043c23ee9c09bf32f3cce93065dd73aa22d659f6917167e1af30675c7c760"
+      }
+    },
+    "sphere_small": {
+      "extents_m": [
+        0.1995,
+        0.1995,
+        0.1806
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/revised_size_preview_20260823/assets/small_sphere_70pct.obj",
+        "sha256": "a2b7425c03c1839c6b8d0db21c3d546c47469beb77146f51b7c72ae73f0a24bc"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/sphere_small.usd",
+        "sha256": "dedcc57e27c197d4e547f64e67d3d62811d33a085823434cc7ec0672e87e6528"
+      }
+    },
+    "cracker_large": {
+      "extents_m": [
+        0.288,
+        0.374,
+        0.126
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/meshes_centered/large_parcel.obj",
+        "sha256": "0f0ae9dc9362143a8046c05b9fd0f2f66f232129b898b9f3e4e265136a87ef16"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/cracker_large.usd",
+        "sha256": "3554a169a3168c20e4979e4e5fdf79bf15baf4f72964ad9e577d7435976fb65e"
+      }
+    },
+    "cracker": {
+      "extents_m": [
+        0.248,
+        0.323,
+        0.109
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/meshes_centered/small_parcel.obj",
+        "sha256": "4dd1f683a80e50adc74159ad1a63280ea285b077019a7ad1446a6397e38fb44b"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/cracker.usd",
+        "sha256": "4237bc22715d4d82468e272ac3ddd8b7d7f84bf4e16dc30d9300c4d5de9682cf"
+      }
+    },
+    "pyramid": {
+      "extents_m": [
+        0.36,
+        0.36,
+        0.296
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/revised_size_preview_pyramid200_20260823/assets/pyramid_200pct.obj",
+        "sha256": "ae084712010d0bdda4cf5655283a1f44456f2bf6beb7b0e5d970c30e511c549c"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/pyramid.usd",
+        "sha256": "23184f39c6d41e5dffbf1197b2b54ddb6b91068a5fdf3d7ba4a9c4e3667e1e8d"
+      }
+    },
+    "cube": {
+      "extents_m": [
+        0.177,
+        0.177,
+        0.133
+      ],
+      "mesh": {
+        "path": "/media/home/zhangjingzhi/objectflow_xhand_six_strict_20260821_v3/meshes_centered/cube.obj",
+        "sha256": "98f36009dd8bbdf512d15b2714604b0924a4bd332e81ca401fa6b2a135050bae"
+      },
+      "usd": {
+        "path": "/media/home/zhangjingzhi/TRO-Grasp-Reproduction/migration_4090/xhand_rl_assets/objects/cube.usd",
+        "sha256": "c8d271309514b0b41aaa194f6e9092f9cf10b57e86ad35aff1a5ee234a5d92f8"
+      }
+    }
+  },
+  "robot_collider_approximation": "convexDecomposition",
+  "robot_usd_build": "/media/home/zhangjingzhi/pipeline_20260906/assets/xhand_decomp_flat.build.json"
+}
