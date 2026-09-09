@@ -714,6 +714,33 @@ BRIDGE_PROFILES = {
             stable=True,
             residual_activation="lift",
         ),
+        # Paired with the grasp-acquisition freeze: get the contact early, spend
+        # the rest of the episode lifting.
+        #
+        # lift50_hold1s_v1 spends 40% of the episode approaching and 25% closing,
+        # which under the freeze puts the release at step 672 of 906.  That
+        # leaves 1.9 s for lift and hold and is why contact_continuity sits at
+        # 0.05-0.16 while the contact itself is finally good: 5/3 groups per
+        # side and distributed contacts 0.818, against 1/1 and 0.256 unfrozen.
+        #
+        # The object cannot move while frozen, so the approach does not need the
+        # time it was given to avoid disturbing it.  Approach and closure drop to
+        # 45% between them and lift and hold take 55%, about 4 s.
+        replace(
+            _profile(
+                "lift50_freeze_v1",
+                target_height_m=0.050,
+                stable_hold_steps=125,
+                stable=True,
+                residual_activation="approach",
+            ),
+            action_group="all",
+            episode_length_s=7.25,
+            phase_fractions=(0.25, 0.20, 0.30, 0.25),
+            maximum_overshoot_m=0.100,
+            residual_integration=0.010,
+            residual_limit_rad=0.30,
+        ),
         # Lift off the table and hold, scored separately from height tracking.
         #
         # standoff_80mm_v1 conflates the two.  Its maximum_overshoot_m is 0.020,

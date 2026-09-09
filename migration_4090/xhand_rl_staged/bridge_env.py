@@ -35,6 +35,7 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         freeze_object_until_bilateral: bool = False,
         freeze_release_force_n: float = 0.02,
         freeze_release_hold_steps: int = 4,
+        latch_fingers_on_release: bool = False,
         **kwargs: Any,
     ):
         self.bridge_profile = profile
@@ -67,6 +68,7 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         self.bridge_freeze_object = bool(freeze_object_until_bilateral)
         self.bridge_freeze_release_force_n = float(freeze_release_force_n)
         self.bridge_freeze_release_hold_steps = int(freeze_release_hold_steps)
+        self.bridge_latch_fingers_on_release = bool(latch_fingers_on_release)
         self.bridge_retracted_pregrasp = None
         super().__init__(cfg, **kwargs)
         self._load_retracted_pregrasp()
@@ -145,6 +147,16 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
         )
         self.bridge_freeze_release_step = torch.full(
             (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        # Finger targets captured at release, so the hand stops closing once it
+        # has the object instead of driving further into it.
+        self.bridge_latched_finger_target = torch.zeros(
+            (self.num_envs, int(self.cfg.action_space)),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self.bridge_fingers_latched = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
         )
         # Consecutive steps where the stability condition and bilateral contact
         # hold at the same time.  See _update_metrics.
@@ -245,6 +257,13 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             extended = torch.clamp(extended, limits[..., 0], limits[..., 1])
             beyond_approach = (code != PHASE_APPROACH).unsqueeze(-1)
             target = torch.where(hand & beyond_approach, extended, target)
+        if self.bridge_latch_fingers_on_release and bool(
+            self.bridge_fingers_latched.any()
+        ):
+            hand = self.bridge_hand_joint_mask & self.bridge_fingers_latched.unsqueeze(
+                -1
+            )
+            target = torch.where(hand, self.bridge_latched_finger_target, target)
         if self.bridge_retracted_pregrasp is None:
             return target
         approach = code == PHASE_APPROACH
@@ -309,12 +328,31 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             self.bridge_freeze_contact_steps + 1,
             torch.zeros_like(self.bridge_freeze_contact_steps),
         )
+        # The freeze must not outlive the closure phase.  Measured with it
+        # unbounded, 70% of episodes were still holding the object when the lift
+        # phase began, so the arms drove upward against a pinned ball for about
+        # 120 steps and wedged into it: 21-29 mm of penetration, present even
+        # with no extra finger closure at all.  Releasing here hands a possibly
+        # ungrasped object to the lift, which the lift criteria will fail
+        # honestly, rather than manufacturing contact by pressing.
+        _, close_end, _, _, _, _ = self.phase_boundaries
         release = frozen & (
-            self.bridge_freeze_contact_steps >= self.bridge_freeze_release_hold_steps
+            (self.bridge_freeze_contact_steps >= self.bridge_freeze_release_hold_steps)
+            | (self.episode_length_buf >= close_end)
         )
         if bool(release.any()):
             self.bridge_freeze_release_step[release] = self.episode_length_buf[release]
             self.bridge_object_frozen[release] = False
+            if self.bridge_latch_fingers_on_release:
+                # The hand has the object; closing further only drives into it.
+                # Measured without this: penetration reaches 22-29 mm by the end
+                # of the closure phase and the overlap resolves against the ball
+                # when the freeze lifts, which is what contact_continuity of 0.12
+                # looks like from the object's side.
+                self.bridge_latched_finger_target[release] = (
+                    self.robot.data.joint_pos[release]
+                )
+                self.bridge_fingers_latched[release] = True
             frozen = self.bridge_object_frozen
         ids = torch.nonzero(frozen, as_tuple=False).squeeze(-1)
         if ids.numel():
@@ -369,6 +407,7 @@ class XHandLiftBridgeEnv(XHandStagedEnv):
             self.bridge_object_frozen[env_ids] = True
             self.bridge_freeze_contact_steps[env_ids] = 0
             self.bridge_freeze_release_step[env_ids] = -1
+            self.bridge_fingers_latched[env_ids] = False
             self.bridge_frozen_object_state[env_ids] = self.object.data.root_state_w[
                 env_ids
             ].clone()

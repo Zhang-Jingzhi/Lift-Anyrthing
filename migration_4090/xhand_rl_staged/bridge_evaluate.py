@@ -54,6 +54,7 @@ parser.add_argument(
 # measured asymmetry: 3 mm of hand-object penetration when the ball is knocked
 # clear before closure, 10-12 mm when a retracted start leaves it in place.
 # Defaults keep the historical values, so passing nothing changes nothing.
+parser.add_argument("--latch-fingers-on-release", action="store_true")
 parser.add_argument("--freeze-object-until-bilateral", action="store_true")
 parser.add_argument("--freeze-release-force-n", type=float, default=0.02)
 parser.add_argument("--freeze-release-hold-steps", type=int, default=4)
@@ -219,6 +220,7 @@ def main() -> None:
         freeze_object_until_bilateral=args.freeze_object_until_bilateral,
         freeze_release_force_n=args.freeze_release_force_n,
         freeze_release_hold_steps=args.freeze_release_hold_steps,
+        latch_fingers_on_release=args.latch_fingers_on_release,
         source_bodex_bank=args.bodex_bank,
         profile=profile,
     )

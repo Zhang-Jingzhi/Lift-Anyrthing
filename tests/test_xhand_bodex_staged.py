@@ -728,6 +728,7 @@ def test_lift_bridge_profiles_tighten_height_before_stability() -> None:
         "standoff_10mm_v1",
         "standoff_80mm_v1",
         "lift50_hold1s_v1",
+        "lift50_freeze_v1",
     }
     controlled_5 = get_bridge_profile("controlled_5mm_v1")
     controlled_5_v2 = get_bridge_profile("controlled_5mm_v2")
